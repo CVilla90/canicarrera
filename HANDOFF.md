@@ -143,6 +143,60 @@ receives exactly one frame per output frame. Charging preset cost to the whole
 pipeline would badly over-estimate Ultra on machines with software encoders,
 which are exactly the machines that most need the number to be right.
 
+## Worlds and the open channel (added 2026-08-01)
+
+Nine worlds now, in two families. `shared/palette.ts` is the whole definition;
+`client/scene/World.ts` renders it.
+
+| Family | Worlds | What it is |
+|---|---|---|
+| `orbit` | neón, cítrico, hielo, magma, bruma, arcade | star field, no ground, **sealed glass tube** |
+| `surface` | **jungla, desierto, glaciar** | gradient sky, terrain, scenery, motes, **open channel + F1 kerbs** |
+
+- **Terrain follows the track down.** These courses drop 40 m+, so a flat plate
+  at any single height is wrong everywhere else — at the lowest point the first
+  half of the race happens in empty sky; at the start the finish is buried.
+  `groundHeightAt()` samples the track's own spine and eases out to a base level
+  with distance.
+- **The channel is a rendering choice only.** The sim is 1-D along the spline
+  with an angular position in the barrel and has no concept of a ceiling. Marble
+  theta is `lane*0.55 + sin(t)*swayAmp`, so ±~1 rad; `CHANNEL_ARC = 1.95` leaves
+  real margin. Narrow it below ~1.2 and marbles appear outside the geometry.
+- `GENERATOR_VERSION` → 2, **`SIM_VERSION` still 1.** `meta.pick()` draws once
+  regardless of list length and palette only feeds marble saturation/lightness,
+  so every seed keeps its archetype, track, physics and winner — only the world
+  changes. `?r=<id>` links replay byte-identically.
+
+### 🔴 Known incomplete: surface world colour grading
+
+**The three surface worlds are structurally correct but visually washed out** —
+low contrast, everything drifting toward a pale wash. The orbit worlds are
+unaffected. Ruled out by measurement, so do not re-test these:
+
+- **Not the fog.** Pushing it to 100000/200000 changed the hills by ~1 value.
+- **Not the key light.** Sweeping 1.5 → 0.5 moved the track pixel 206 → 190.
+- **Not the env map.** Disabling `scene.environment` moved it ~12 values.
+- **Partly the palette design, now fixed:** the first jungle had a *green sky*
+  over green fog over green terrain — sky and fog cover most of the frame, so
+  the result was monochrome soup. Skies are blue now.
+- **Partly exposure, now plumbed:** ACES begins `color *= exposure / 0.6`, a
+  1.9x boost, so any mid-tone lands near white. Orbit worlds never showed it
+  because they are nearly black. `Palette.exposure` is now per-world (orbit
+  1.15, surface 0.5). This helped but did not finish the job.
+
+⚠️ **The measurement method itself became unreliable at the end** — a terrain
+pixel read as lit with every light at zero, which is impossible for a
+`MeshStandardMaterial`. Suspect canvas readback across separate JS evaluations:
+`preserveDrawingBuffer` plus the PostFX composite means `readPixels` can return
+a stale or already-swapped buffer. **Always `s.draw()` immediately before
+`readPixels`, in the same evaluation**, and prefer tagging surfaces with
+distinct flat colours over reading single pixels — that is what finally proved
+the terrain, not the sky, fills the frame.
+
+Next thing to try: render one surface world with `toneMapping = NoToneMapping`
+and no PostFX to see the raw linear values, which removes both suspect layers at
+once.
+
 ## Deliberately not built
 
 - **Tier C** (browsers with no `VideoEncoder`, i.e. Firefox Android): the

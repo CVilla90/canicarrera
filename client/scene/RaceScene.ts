@@ -17,6 +17,7 @@ import {
   Color,
   DirectionalLight,
   BackSide,
+  DoubleSide,
   DynamicDrawUsage,
   Fog,
   Group,
@@ -49,15 +50,17 @@ const FORWARD = new Vector3(0, 0, 1);
 import { RaceSim, COUNTDOWN, type RacePhase } from '@shared/sim.ts';
 import { buildTrack, type Track } from '@shared/track.ts';
 import { PHYSICS, type RaceSpec } from '@shared/spec.ts';
-import { PALETTES, hslToHex } from '@shared/palette.ts';
+import { PALETTES, hslToHex, type Palette } from '@shared/palette.ts';
 import { COSMETIC, stream } from '@shared/rng.ts';
 import { clamp } from '@shared/vec3.ts';
 import { SharedCurve } from './SharedCurve.ts';
+import { buildWorld, buildChannelGeometry, buildKerbs, updateMotes, type WorldParts } from './World.ts';
 import { PostFX } from '../render/PostFX.ts';
 import { buildEnvironment } from '../render/environment.ts';
 import { presetById, DEFAULT_PRESET_ID, needsPostFX, type RenderPreset } from '../render/presets.ts';
 
-const EXPOSURE = 1.15;
+/** Exposure before any race is loaded; every world then sets its own. */
+const DEFAULT_EXPOSURE = 1.15;
 
 export interface StandingRow {
   id: number;
@@ -118,6 +121,7 @@ export class RaceScene {
   private marbleMeshes: Mesh[] = [];
   private lastSpin: number[] = [];
   private starField: Points | null = null;
+  private world: WorldParts | null = null;
   private confetti: { points: Points; vel: Vector3[]; life: number } | null = null;
   private confettiFired = false;
 
@@ -145,6 +149,13 @@ export class RaceScene {
   private readonly postFXAvailable: boolean;
   private envTarget: WebGLRenderTarget | null = null;
   private tubeMaterial: MeshStandardMaterial | null = null;
+  /**
+   * Env-map strength the CURRENT track surface wants.
+   *
+   * Stored rather than hardcoded in `setRenderPreset`, which used to reset it
+   * to the glass tube's value and silently over-lit every channel world.
+   */
+  private tubeEnvBase = 1.1;
 
   /** Sub-frames averaged per output frame. 1 during live playback, always. */
   private subFrames = 1;
@@ -166,7 +177,7 @@ export class RaceScene {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.outputColorSpace = SRGBColorSpace;
     this.renderer.toneMapping = ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = EXPOSURE;
+    this.renderer.toneMappingExposure = DEFAULT_EXPOSURE;
 
     // Probed once, at construction. Everything above Ligero needs to render
     // into a half-float target, and on a GPU that cannot, the presets are not
@@ -201,7 +212,9 @@ export class RaceScene {
     this.syncEnvironment();
     this.syncMarbleMaterials();
     this.syncPostFX();
-    if (this.tubeMaterial) this.tubeMaterial.envMapIntensity = effective.env ? 1.1 : 0;
+    if (this.tubeMaterial) {
+      this.tubeMaterial.envMapIntensity = effective.env ? this.tubeEnvBase : 0;
+    }
   }
 
   /**
@@ -238,7 +251,10 @@ export class RaceScene {
     this.postFX.configure({
       bloom: this.preset.bloom,
       bloomStrength: 0.55,
-      exposure: EXPOSURE,
+      // Whatever the current world asked for. PostFX owns tone mapping when it
+      // is active, so this MUST track `renderer.toneMappingExposure` or the
+      // same world grades differently with bloom on and off.
+      exposure: this.renderer.toneMappingExposure,
       supersample: this.exporting ? this.preset.supersample : 1,
     });
     this.postFX.setSize(this.outputWidth, this.outputHeight);
@@ -314,11 +330,15 @@ export class RaceScene {
     const palette = PALETTES[spec.palette];
     this.scene.background = new Color(palette.background);
     this.scene.fog = new Fog(palette.background, palette.fogNear, palette.fogFar);
+    // Set BEFORE syncPostFX below, which copies it into the composite pass.
+    this.renderer.toneMappingExposure = palette.exposure;
 
     this.buildLights();
     // Before the meshes: the environment map is what their materials sample,
     // and building it first means no frame is ever drawn with it missing.
     this.syncEnvironment();
+    this.world = buildWorld(palette, this.track);
+    this.scene.add(this.world.group);
     this.buildStars();
     this.buildTrackMesh();
     this.buildMarbles();
@@ -461,14 +481,18 @@ export class RaceScene {
     const palette = PALETTES[this.spec!.palette];
     const group = new Group();
     group.name = 'lights';
-    group.add(new HemisphereLight(palette.fillLight, palette.groundLight, 1.6));
-    const key = new DirectionalLight(palette.keyLight, 2.2);
+    // Intensities come from the world. An orbit world is a black void with a
+    // glowing chute and can take ~5 units of flat light; a surface world has a
+    // lit sky and lit terrain, and the same rig blows the entire frame to
+    // pastel with no dark side on anything.
+    group.add(new HemisphereLight(palette.fillLight, palette.groundLight, palette.hemiIntensity));
+    const key = new DirectionalLight(palette.keyLight, palette.keyIntensity);
     key.position.set(30, 60, 20);
     group.add(key);
-    const rim = new DirectionalLight(palette.fillLight, 0.9);
+    const rim = new DirectionalLight(palette.fillLight, palette.rimIntensity);
     rim.position.set(-40, 20, -30);
     group.add(rim);
-    group.add(new AmbientLight(palette.fillLight, 0.35));
+    group.add(new AmbientLight(palette.fillLight, palette.ambientIntensity));
     this.scene.add(group);
     this.lightGroup = group;
   }
@@ -477,6 +501,8 @@ export class RaceScene {
 
   private buildStars(): void {
     const palette = PALETTES[this.spec!.palette];
+    // Surface worlds have a sky instead. `starCount: 0` is the switch.
+    if (palette.starCount <= 0) return;
     const rng = stream(this.spec!.seed, COSMETIC.stars);
     const n = palette.starCount;
     const pos = new Float32Array(n * 3);
@@ -516,8 +542,34 @@ export class RaceScene {
 
     const curve = new SharedCurve(track.spline);
     const tubular = clamp(Math.round(track.total / 0.9), 240, 1600);
+
+    if (palette.trackStyle === 'channel') {
+      // Open roof. The chute becomes a running surface with real edges, which
+      // is what a track on the ground looks like — and what kerbs sit on.
+      // Opaque, not tinted glass: you are looking AT this surface now, not
+      // through it.
+      // A track surface under a real sun. Rough, barely reflective, and lit
+      // mostly by the key light rather than by the environment — crank the env
+      // up here and the whole channel washes out to the colour of the sky.
+      this.tubeEnvBase = 0.35;
+      this.tubeMaterial = new MeshStandardMaterial({
+        color: palette.trackColor,
+        roughness: 0.82,
+        metalness: 0,
+        envMapIntensity: this.preset.env ? this.tubeEnvBase : 0,
+        side: DoubleSide,
+      });
+      group.add(new Mesh(buildChannelGeometry(track, track.tubeRadius, tubular), this.tubeMaterial));
+      if (palette.kerbs) group.add(buildKerbs(track, track.tubeRadius, palette.kerbA, palette.kerbB));
+      this.buildTrackFurniture(group, track, palette);
+      this.scene.add(group);
+      this.trackGroup = group;
+      return;
+    }
+
     const tubeGeo = new TubeGeometry(curve, tubular, track.tubeRadius, 16, false);
 
+    this.tubeEnvBase = 1.1;
     this.tubeMaterial = new MeshStandardMaterial({
       color: palette.glass,
       metalness: 0.1,
@@ -566,6 +618,20 @@ export class RaceScene {
     ribs.instanceMatrix.needsUpdate = true;
     group.add(ribs);
 
+    this.buildTrackFurniture(group, track, palette);
+
+    this.scene.add(group);
+    this.trackGroup = group;
+  }
+
+  /**
+   * Section markers, start gate and finish arch.
+   *
+   * Shared by both track styles: on the sealed tube they read as rings inside
+   * the pipe, and on the open channel the same geometry reads as gantries
+   * arching over the track — which is exactly the right look for a circuit.
+   */
+  private buildTrackFurniture(group: Group, track: Track, palette: Palette): void {
     // A ring marks every change of section, so the geometry the generator chose
     // is legible from inside the race rather than only in the spec.
     const ringGeo = new TorusGeometry(track.tubeRadius + 0.22, 0.055, 8, 40);
@@ -610,9 +676,6 @@ export class RaceScene {
     );
     this.placeOnTrack(halo, track.finishS);
     group.add(halo);
-
-    this.scene.add(group);
-    this.trackGroup = group;
   }
 
   private placeOnTrack(object: Mesh, s: number): void {
@@ -666,6 +729,11 @@ export class RaceScene {
     }
 
     this.updateCamera(dt);
+
+    // After the camera: the mote field wraps around wherever the camera now is,
+    // so weather follows the race down the course instead of being left behind
+    // at the start line.
+    if (this.world?.motes) updateMotes(this.world.motes, dt, this.camera.position);
 
     if (!this.confettiFired && sim.finishOrder.length > 0) {
       this.confettiFired = true;
@@ -917,6 +985,18 @@ export class RaceScene {
       this.starField.geometry.dispose();
       (this.starField.material as PointsMaterial).dispose();
       this.starField = null;
+    }
+    if (this.world) {
+      this.scene.remove(this.world.group);
+      this.world.group.traverse((object) => {
+        if (object instanceof Mesh || object instanceof Points) {
+          object.geometry.dispose();
+          const material = object.material;
+          if (Array.isArray(material)) material.forEach((m) => m.dispose());
+          else material.dispose();
+        }
+      });
+      this.world = null;
     }
     if (this.lightGroup) {
       this.scene.remove(this.lightGroup);

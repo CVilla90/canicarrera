@@ -80,6 +80,17 @@ export function buildEnvironment(
 ): { texture: Texture; target: WebGLRenderTarget } {
   const scene = new Scene();
 
+  /**
+   * Surface worlds get a much dimmer environment.
+   *
+   * In orbit the env map is doing most of the work — there is nothing else out
+   * there, so an overdriven dome is what makes the glass read as glass. On the
+   * ground there is already a sun, a lit sky and lit terrain, and adding a
+   * 7x-overdriven dome on top of that is what turned the jungle into a flat
+   * mint wash. Image-based light is still light, and it all adds up.
+   */
+  const gain = palette.kind === 'surface' ? 0.32 : 1;
+
   const sky = new Mesh(
     new SphereGeometry(60, 24, 16),
     new ShaderMaterial({
@@ -89,9 +100,9 @@ export function buildEnvironment(
       // half-float target, so these values stay HDR all the way through.
       toneMapped: false,
       uniforms: {
-        uGround: { value: hdr(palette.groundLight, 1.1) },
-        uHorizon: { value: hdr(palette.fillLight, 0.55) },
-        uSky: { value: hdr(palette.background, 2.2) },
+        uGround: { value: hdr(palette.groundLight, 1.1 * gain) },
+        uHorizon: { value: hdr(palette.fillLight, 0.55 * gain) },
+        uSky: { value: hdr(palette.background, 2.2 * gain) },
       },
       vertexShader: SKY_VERTEX,
       fragmentShader: SKY_FRAGMENT,
@@ -102,9 +113,9 @@ export function buildEnvironment(
   // Three light cards, matching the three real lights in the scene so the
   // reflections agree with the shading rather than fighting it.
   const cards: Array<{ color: Color; position: [number, number, number]; scale: [number, number, number] }> = [
-    { color: hdr(palette.keyLight, 7), position: [16, 26, 12], scale: [16, 10, 0.4] },
-    { color: hdr(palette.fillLight, 2.4), position: [-22, 8, -16], scale: [20, 12, 0.4] },
-    { color: hdr(palette.ringA, 1.8), position: [0, -14, 20], scale: [26, 6, 0.4] },
+    { color: hdr(palette.keyLight, 7 * gain), position: [16, 26, 12], scale: [16, 10, 0.4] },
+    { color: hdr(palette.fillLight, 2.4 * gain), position: [-22, 8, -16], scale: [20, 12, 0.4] },
+    { color: hdr(palette.ringA, 1.8 * gain), position: [0, -14, 20], scale: [26, 6, 0.4] },
   ];
 
   const cardGeometry = new BoxGeometry(1, 1, 1);

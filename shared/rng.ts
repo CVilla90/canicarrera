@@ -132,6 +132,12 @@ export const COSMETIC = {
   stars: 'cosmetic:stars',
   confetti: 'cosmetic:confetti',
   dust: 'cosmetic:dust',
+  /** Scenery scattered around a surface world: trees, dunes, ice shards. */
+  props: 'cosmetic:props',
+  /** Drifting atmosphere: snow, sand, spores, embers. */
+  motes: 'cosmetic:motes',
+  /** Trackside billboards — placement only; the text is not random. */
+  billboards: 'cosmetic:billboards',
 } as const;
 
 const SEED_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'; // Crockford-ish: no I, L, O, U

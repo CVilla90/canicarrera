@@ -24,8 +24,14 @@
 import type { RaceScene } from '../scene/RaceScene.ts';
 import { WebCodecsEncoder, hasWebCodecs, pickCodec } from './encoder.ts';
 import { QUALITIES, qualityById, pixelFactor, type Quality } from './quality.ts';
-import { baselinePreset, drawCost, type RenderPreset } from '../render/presets.ts';
-import { exportSeconds } from '../render/cost.ts';
+import {
+  PRESETS,
+  baselinePreset,
+  drawCost,
+  needsPostFX,
+  type RenderPreset,
+} from '../render/presets.ts';
+import { exportSeconds, resolveDrawCost } from '../render/cost.ts';
 
 export { pixelFactor };
 
@@ -37,6 +43,8 @@ export interface Benchmark {
   rasterFps: number;
   /** Full draw -> VideoFrame -> encode -> mux throughput at the same settings. */
   pipelineFps: number;
+  /** Measured draw cost per preset id, relative to the baseline preset. */
+  presetCost?: Record<string, number>;
   measuredAt: number;
 }
 
@@ -54,9 +62,10 @@ export interface Capability {
   note: string | null;
 }
 
-// Bumped from v1: the cached shape now has to be interpreted against a known
-// baseline preset, so a v1 measurement is not comparable and must be retaken.
-const CACHE_KEY = 'canicarrera.capability.v2';
+// v2: measurements became relative to a known baseline preset.
+// v3: added measured per-preset draw cost. A v2 entry still works — the cost
+//     model falls back to the static guess — but it is worth retaking once.
+const CACHE_KEY = 'canicarrera.capability.v3';
 
 /**
  * Seconds this machine needs to export `frames` frames at `quality` + `preset`.
@@ -69,7 +78,12 @@ export function estimateSeconds(
   preset: RenderPreset,
   frames: number,
 ): number | null {
-  return exportSeconds(capability.benchmark, pixelFactor(quality), drawCost(preset), frames);
+  const cost = resolveDrawCost(
+    preset.id,
+    drawCost(preset),
+    capability.benchmark?.presetCost,
+  );
+  return exportSeconds(capability.benchmark, pixelFactor(quality), cost, frames);
 }
 
 function tierFor(webCodecs: boolean, hardware: boolean, pipelineFps: number): Tier {
@@ -158,7 +172,16 @@ async function benchmarkScene(scene: RaceScene): Promise<Benchmark | null> {
     // button is a promise, so it has to be measured the way exports actually run.
     await encoder.finish();
 
-    return { rasterFps, pipelineFps, measuredAt: Date.now() };
+    // Per-preset draw cost, measured rather than modelled. Done last so a
+    // failure here cannot cost us the two numbers that matter most.
+    let presetCost: Record<string, number> | undefined;
+    try {
+      presetCost = benchmarkPresets(scene, 1000 / rasterFps);
+    } catch {
+      presetCost = undefined;
+    }
+
+    return { rasterFps, pipelineFps, presetCost, measuredAt: Date.now() };
   } catch {
     return null;
   } finally {
@@ -171,6 +194,51 @@ async function benchmarkScene(scene: RaceScene): Promise<Benchmark | null> {
 }
 
 const nextTick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** Stop timing a preset once it has cost this long; slow machines must not stall. */
+const PRESET_PROBE_BUDGET_MS = 60;
+const PRESET_PROBE_MAX_FRAMES = 8;
+
+/**
+ * Times each preset's DRAW on this machine, relative to the baseline.
+ *
+ * This replaces a static model that was wrong by 6x on real hardware — see
+ * `resolveDrawCost` for the measurements. The whole thing is bounded: each
+ * preset renders at most 8 frames and bails after 60 ms, so the worst case is
+ * roughly a quarter of a second on a machine slow enough to need the accuracy.
+ *
+ * Draw only, no encoder. The encoder's share is already known from
+ * `pipelineFps`, and it does not vary with preset — however many sub-frames get
+ * averaged, exactly one frame per output frame reaches the encoder.
+ */
+function benchmarkPresets(scene: RaceScene, baselineMsPerFrame: number): Record<string, number> {
+  const costs: Record<string, number> = {};
+  if (!(baselineMsPerFrame > 0)) return costs;
+
+  for (const preset of PRESETS) {
+    if (needsPostFX(preset, true) && !scene.supportsPostFX) continue;
+    scene.setRenderPreset(preset);
+    scene.beginExportRender(preset.motionBlur);
+    scene.restart();
+
+    // Warm-up: a preset switch rebuilds materials and may compile new programs,
+    // and charging that to the first timed frame would libel the preset.
+    for (let i = 0; i < 3; i++) scene.renderFrameAt(i / 60, 1 / 60);
+
+    const start = performance.now();
+    let frames = 0;
+    while (frames < PRESET_PROBE_MAX_FRAMES) {
+      scene.renderFrameAt((3 + frames) / 60, 1 / 60);
+      frames++;
+      if (performance.now() - start > PRESET_PROBE_BUDGET_MS) break;
+    }
+    const elapsed = performance.now() - start;
+    scene.endExportRender();
+
+    if (frames > 0 && elapsed > 0) costs[preset.id] = elapsed / frames / baselineMsPerFrame;
+  }
+  return costs;
+}
 
 export interface ProbeOptions {
   /** Ignore any cached measurement. The "volver a medir" button sets this. */

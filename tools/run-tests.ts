@@ -8,7 +8,8 @@
  * The first two tests are the ones that matter. If they fail, every shared link
  * in the wild is broken and the export feature is a lie.
  */
-import { generateSpec } from '../shared/generator.ts';
+import { generateSpec, ARCHETYPE_NAMES } from '../shared/generator.ts';
+import { PALETTES, PALETTE_NAMES } from '../shared/palette.ts';
 import { RaceSim, simulate, COUNTDOWN, OUTRO } from '../shared/sim.ts';
 import { curate, scoreRace } from '../shared/curate.ts';
 import { randomSeed, normaliseSeed, stream, COSMETIC } from '../shared/rng.ts';
@@ -129,8 +130,44 @@ section('Track generator');
     `${intersecting} intersected`,
   );
   check('track lengths land in a sane band', minLen > 300 && maxLen < 1100, `${minLen.toFixed(0)}-${maxLen.toFixed(0)} m`);
-  check('all 5 archetypes appear', archetypes.size === 5, [...archetypes].join(', '));
-  check('all 6 palettes appear', palettes.size === 6, [...palettes].join(', '));
+  // Counted from the data, not hardcoded: the point of the check is that the
+  // generator can REACH every world it knows about, and a literal here just
+  // means adding a world breaks an unrelated test.
+  check(
+    `all ${ARCHETYPE_NAMES.length} archetypes appear`,
+    archetypes.size === ARCHETYPE_NAMES.length,
+    [...archetypes].join(', '),
+  );
+  check(
+    `all ${PALETTE_NAMES.length} worlds appear`,
+    palettes.size === PALETTE_NAMES.length,
+    [...palettes].join(', '),
+  );
+
+  // Surface worlds are a different renderer path (sky dome, terrain, scenery,
+  // motes) and every one of them must be self-consistent or it draws a plane
+  // floating in a void.
+  const surface = PALETTE_NAMES.map((n) => PALETTES[n]).filter((p) => p.kind === 'surface');
+  check(
+    'every surface world has ground, scenery and weather',
+    surface.length > 0 &&
+      surface.every(
+        (p) =>
+          p.ground !== null &&
+          p.starCount === 0 &&
+          p.props !== 'none' &&
+          p.propCount > 0 &&
+          p.motes !== 'none' &&
+          p.moteCount > 0,
+      ),
+    surface.map((p) => p.name).join(', '),
+  );
+  check(
+    'every orbit world still has its star field and no terrain',
+    PALETTE_NAMES.map((n) => PALETTES[n])
+      .filter((p) => p.kind === 'orbit')
+      .every((p) => p.starCount > 0 && p.ground === null),
+  );
 }
 
 // ---------------------------------------------------------------- races
@@ -359,6 +396,46 @@ section('Render presets and cost model');
     'a plan never names a resolution the browser refused',
     budgets.every((seconds) => planForBudget(only720, 60, seconds).qualityId === '720p30'),
   );
+
+  // Measured cost must beat the static model. The static model was wrong by 6x
+  // on a real GPU (Ultra: 3.2x measured vs 21.6x modelled), and an ETA that
+  // pessimistic means nobody ever picks the good preset.
+  const measured: PlanCapability = {
+    supported: allQualities,
+    postFX: true,
+    benchmark: { ...machine, presetCost: { ligero: 0.9, estandar: 1, alto: 1.77, ultra: 3.21 } },
+  };
+  const modelledUltra = planSeconds(fastMachine, { qualityId: '1080p60', presetId: 'ultra' }, 60)!;
+  const measuredUltra = planSeconds(measured, { qualityId: '1080p60', presetId: 'ultra' }, 60)!;
+  check(
+    'a measured preset cost overrides the static model',
+    measuredUltra < modelledUltra / 4,
+    `${measuredUltra.toFixed(1)} s measured vs ${modelledUltra.toFixed(1)} s modelled`,
+  );
+
+  const partial: PlanCapability = {
+    supported: allQualities,
+    postFX: true,
+    benchmark: { ...machine, presetCost: { estandar: 1 } },
+  };
+  check(
+    'a preset missing from the measurement falls back to the model',
+    planSeconds(partial, { qualityId: '1080p60', presetId: 'ultra' }, 60) === modelledUltra,
+  );
+  check(
+    'a zero or negative measurement is ignored rather than trusted',
+    planSeconds(
+      { ...partial, benchmark: { ...machine, presetCost: { ultra: 0 } } },
+      { qualityId: '1080p60', presetId: 'ultra' },
+      60,
+    ) === modelledUltra,
+  );
+
+  // 120 fps exists but must never be planned automatically: YouTube caps
+  // playback at 60, so it is double the cost for no delivered benefit.
+  check('120 fps is offered but kept off the automatic ladder',
+    QUALITIES.some((q) => q.id === '1080p120') &&
+      !LADDER.some((rung) => rung.qualityId === '1080p120'));
 
   const reference = planSeconds(fastMachine, { qualityId: '1080p60', presetId: 'ultra' }, 60)!;
   console.log(

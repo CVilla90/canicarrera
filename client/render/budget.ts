@@ -29,7 +29,7 @@ import {
   type PresetId,
   type RenderPreset,
 } from './presets.ts';
-import { exportSeconds, type Throughput } from './cost.ts';
+import { exportSeconds, resolveDrawCost, type Throughput } from './cost.ts';
 
 export interface RenderPlan {
   qualityId: string;
@@ -100,7 +100,7 @@ export function planSeconds(
   return exportSeconds(
     capability.benchmark,
     pixelFactor(quality),
-    drawCost(preset),
+    resolveDrawCost(preset.id, drawCost(preset), capability.benchmark?.presetCost),
     framesFor(quality, videoDuration),
   );
 }

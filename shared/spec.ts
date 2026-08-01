@@ -17,8 +17,17 @@
  */
 export const SIM_VERSION = 1;
 
-/** Bump when the generator's taste changes but old specs still replay correctly. */
-export const GENERATOR_VERSION = 1;
+/**
+ * Bump when the generator's taste changes but old specs still replay correctly.
+ *
+ * v2 — added the jungla / desierto / glaciar worlds. `meta.pick(PALETTE_NAMES)`
+ * draws once regardless of how long that list is, and palette only feeds the
+ * marbles' saturation and lightness, so a seed keeps its archetype, its track,
+ * its marble physics and its winner. Only the *world it is set in* changes.
+ * That is a taste change, not a simulation change: `SIM_VERSION` stays 1 and
+ * every `?r=<id>` link replays byte-identically.
+ */
+export const GENERATOR_VERSION = 2;
 
 // ---------------------------------------------------------------- track
 
@@ -146,7 +155,18 @@ export interface MarbleSpec {
 
 export type ArchetypeName = 'descenso' | 'helice' | 'guantelete' | 'acantilado' | 'serpiente';
 
-export type PaletteName = 'neon' | 'citrico' | 'hielo' | 'magma' | 'bruma' | 'arcade';
+export type PaletteName =
+  // Orbit worlds — star fields, no ground, the original six.
+  | 'neon'
+  | 'citrico'
+  | 'hielo'
+  | 'magma'
+  | 'bruma'
+  | 'arcade'
+  // Surface worlds — gradient sky, terrain, scenery, drifting motes.
+  | 'jungla'
+  | 'desierto'
+  | 'glaciar';
 
 export interface RaceSpec {
   version: number;

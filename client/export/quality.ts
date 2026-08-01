@@ -32,10 +32,28 @@ const make = (id: string, label: string, width: number, height: number, fps: num
   costFactor: (width * height * fps) / px1080p30,
 });
 
+/**
+ * ## On frame rates
+ *
+ * **YouTube caps playback at 60 fps.** Upload 120 and it is re-encoded down, so
+ * you pay double the frames, double the export time and double the bytes for a
+ * video the platform will not play back at that rate. 120 is therefore offered
+ * but deliberately kept OFF the automatic ladder — it is for someone who knows
+ * they want it (a local file, a 2x slow-motion edit), not something to be
+ * silently planned into.
+ *
+ * 30 vs 60 is the choice that actually matters, and it interacts with motion
+ * blur: at 30 fps a marble crossing frame strobes without blur, which is
+ * exactly why the higher presets accumulate sub-frames. 60 fps needs less blur
+ * to read smoothly, so 60+Estándar often looks better than 30+Ultra and costs
+ * about the same.
+ */
 export const QUALITIES: Quality[] = [
   make('720p30', '720p30', 1280, 720, 30, 5),
+  make('720p60', '720p60', 1280, 720, 60, 8),
   make('1080p30', '1080p30', 1920, 1080, 30, 9),
   make('1080p60', '1080p60', 1920, 1080, 60, 13),
+  make('1080p120', '1080p120', 1920, 1080, 120, 20),
   make('1440p60', '1440p60', 2560, 1440, 60, 22),
   make('2160p60', '4K60', 3840, 2160, 60, 45),
 ];

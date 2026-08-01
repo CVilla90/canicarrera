@@ -27,6 +27,37 @@ export interface Throughput {
   rasterFps: number;
   /** Draw + encode + mux frames per second, same reference. */
   pipelineFps: number;
+  /**
+   * MEASURED draw cost per preset id, relative to the baseline preset.
+   *
+   * Optional because a cached measurement from an older build will not have it.
+   */
+  presetCost?: Record<string, number>;
+}
+
+/**
+ * The measured cost of a preset, or the static guess if it was never measured.
+ *
+ * The static guess (`sceneCost * supersample² * motionBlur`) is a *model*, and
+ * on real hardware it is wrong by a lot. Measured on a 3070Ti at 1080p, Ultra
+ * costs **3.2x** the baseline where the model predicted **21.6x** — because
+ * this scene is geometry-bound, not fill-bound, so 2x supersampling is very
+ * nearly free. Believing the model would have printed "~2 min 15 s" on a button
+ * for a 20-second export and nobody would ever have chosen Ultra.
+ *
+ * The inverse is just as important: on a weak integrated GPU or a phone the
+ * scene IS fill-bound, supersampling genuinely does cost 4x, and the same
+ * static model would have been optimistic instead. There is no constant that is
+ * right on both machines — which is why this is measured per machine, the same
+ * conclusion this project already reached about encoder throughput.
+ */
+export function resolveDrawCost(
+  presetId: string,
+  staticCost: number,
+  presetCost?: Record<string, number>,
+): number {
+  const measured = presetCost?.[presetId];
+  return typeof measured === 'number' && measured > 0 ? measured : staticCost;
 }
 
 /**
