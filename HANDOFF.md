@@ -3,8 +3,19 @@
 **Read this first.** `PLAN.md` is the strategy and still accurate; this file is
 where the code actually is.
 
-*Last session: 2026-07-27. Stage 0 / "Phase 1" is built and working locally.
-Not deployed.*
+*Last session: 2026-08-01. Stage 0 / "Phase 1" is built, under version control,
+and pre-flight-checked for deploy. **Not deployed yet.***
+
+## Version control
+
+`github.com/CVilla90/canicarrera`, public, branch `main`. Initial commit
+`d36c63a` covers all of Stage 0.
+
+⚠️ **`gh` on this laptop is authed as the work account `carlosvilla-creai`** —
+never use it to write here. Push over the ssh alias:
+`git@github-personal:CVilla90/canicarrera.git` (already set as `origin`). The
+repo-local identity is the CVilla90 noreply address; global git stays the work
+email, so **never commit here with `--global` identity assumptions**.
 
 ---
 
@@ -60,7 +71,7 @@ when something in the frame loop misbehaves.
 | W7 capability probe + honest ETA | ✅ built, ⚠️ see "known issues" |
 | W8 job API | ✅ always answers `mode:"client"`; client already speaks the protocol |
 | W9 UI/UX | ✅ Spanish-first broadcast HUD |
-| W10 Replit deploy + phone/Safari smoke test | ❌ **not done** — `.replit` is written, nothing published |
+| W10 Replit deploy + phone/Safari smoke test | ⚠️ **not published** — `.replit` written, repo pushed, deploy path verified locally (see below); the Replit half is untouched |
 | W11 telemetry | ✅ writing; no panel (as planned) |
 
 ## Deliberately not built
@@ -119,10 +130,32 @@ when something in the frame loop misbehaves.
   tube is ~8000 edges and reads as solid paint; a coarse one reads as a debug
   cage.
 
+## Deploy pre-flight (run 2026-08-01, all green)
+
+The exact commands Replit will run were run locally against the built output,
+so a failure on Replit is a *platform* problem, not a code problem:
+
+| Check | Result |
+|---|---|
+| `npm run build` | clean (2 cosmetic warnings: tailwind sourcemap, 539 kB three chunk) |
+| `npm start` → `GET /api/health` | `{ok:true, simVersion:1}` |
+| `POST /api/race` cold | **204 ms** including first-request JIT warm-up — inside the 4 s curation budget |
+| `GET /` | 200, `Cache-Control: no-store` ✅ |
+| `GET /assets/index-*.js` | 200, `public, max-age=31536000, immutable` ✅ |
+| `/?c=hola-mundo` and an unknown path | 200 — SPA fallback works |
+
+⚠️ The build needs **devDependencies** (vite, esbuild, tsc). If Replit ever sets
+`NODE_ENV=production` before install, the build breaks with a missing-vite
+error — that is the failure mode to recognise.
+
 ## Next
 
-1. **Deploy** (W10). `.replit` is ready: Autoscale, **1 vCPU / 2 GiB**, max 1–3.
-   `npm install` is deliberately *not* in the build command — Replit runs it.
+1. **Deploy** (W10) — the only remaining step is on Replit's side.
+   🔴 **Use a blank Repl + `git clone https://github.com/CVilla90/canicarrera.git`.
+   Do NOT use "Import from GitHub"** — it restructures the repo before any agent
+   reads a file, and nothing in-repo can prevent it.
+   Then Publishing → Autoscale, **1 vCPU / 2 GiB**, max 1–3. `.replit` already
+   carries build/run. `npm install` is deliberately *not* in the build command.
    Confirm the machine-power slider stops match PLAN §1.2 while you are in there
    (risk R2).
 2. **Smoke test on a phone and on Safari** — especially a sustained export, watching
