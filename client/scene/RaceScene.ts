@@ -25,6 +25,7 @@ import {
   Matrix4,
   Mesh,
   MeshBasicMaterial,
+  MeshPhysicalMaterial,
   MeshStandardMaterial,
   PerspectiveCamera,
   Points,
@@ -38,6 +39,8 @@ import {
   WebGLRenderer,
   ACESFilmicToneMapping,
   SRGBColorSpace,
+  type Material,
+  type WebGLRenderTarget,
 } from 'three';
 
 /** Torus geometry points along +Z, so this is the axis every ring is aimed from. */
@@ -50,6 +53,11 @@ import { PALETTES, hslToHex } from '@shared/palette.ts';
 import { COSMETIC, stream } from '@shared/rng.ts';
 import { clamp } from '@shared/vec3.ts';
 import { SharedCurve } from './SharedCurve.ts';
+import { PostFX } from '../render/PostFX.ts';
+import { buildEnvironment } from '../render/environment.ts';
+import { presetById, DEFAULT_PRESET_ID, needsPostFX, type RenderPreset } from '../render/presets.ts';
+
+const EXPOSURE = 1.15;
 
 export interface StandingRow {
   id: number;
@@ -125,6 +133,26 @@ export class RaceScene {
   private readonly marbleGeo = new SphereGeometry(PHYSICS.marbleRadius, 24, 16);
   private readonly capGeo = new SphereGeometry(0.085, 10, 8);
 
+  // ------------------------------------------------------------ quality
+
+  /**
+   * Visual quality only. Nothing here reaches the simulator — `setRenderPreset`
+   * cannot change who wins, so the same seed is the same race at every setting
+   * and share links stay honest.
+   */
+  private preset: RenderPreset = presetById(DEFAULT_PRESET_ID);
+  private postFX: PostFX | null = null;
+  private readonly postFXAvailable: boolean;
+  private envTarget: WebGLRenderTarget | null = null;
+  private tubeMaterial: MeshStandardMaterial | null = null;
+
+  /** Sub-frames averaged per output frame. 1 during live playback, always. */
+  private subFrames = 1;
+  private exporting = false;
+  /** Output size in device pixels, tracked so PostFX can be resized with it. */
+  private outputWidth = 1;
+  private outputHeight = 1;
+
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new WebGLRenderer({
       canvas,
@@ -138,10 +166,137 @@ export class RaceScene {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.outputColorSpace = SRGBColorSpace;
     this.renderer.toneMapping = ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.15;
+    this.renderer.toneMappingExposure = EXPOSURE;
+
+    // Probed once, at construction. Everything above Ligero needs to render
+    // into a half-float target, and on a GPU that cannot, the presets are not
+    // "slow" — they are black. Better to know now and never offer them.
+    this.postFXAvailable = PostFX.isSupported(this.renderer);
 
     this.camera = new PerspectiveCamera(58, 16 / 9, 0.1, 900);
     this.scene.add(this.camera);
+  }
+
+  // -------------------------------------------------------------- quality
+
+  get supportsPostFX(): boolean {
+    return this.postFXAvailable;
+  }
+
+  get renderPreset(): RenderPreset {
+    return this.preset;
+  }
+
+  /**
+   * Swaps the visual preset. Safe at any time, including mid-race — it rebuilds
+   * materials and buffers but never touches `sim`, so the race carries on from
+   * exactly where it was.
+   */
+  setRenderPreset(preset: RenderPreset): void {
+    const effective = this.postFXAvailable ? preset : presetById('ligero');
+    const changed = effective.id !== this.preset.id;
+    this.preset = effective;
+    if (!changed) return;
+
+    this.syncEnvironment();
+    this.syncMarbleMaterials();
+    this.syncPostFX();
+    if (this.tubeMaterial) this.tubeMaterial.envMapIntensity = effective.env ? 1.1 : 0;
+  }
+
+  /**
+   * Enters offline render mode: sub-frame accumulation on, supersampled buffers
+   * allocated. `subFrames` comes from the preset but is passed explicitly so the
+   * benchmark can force 1 and measure a clean baseline.
+   */
+  beginExportRender(subFrames: number): void {
+    this.exporting = true;
+    this.subFrames = Math.max(1, Math.round(subFrames));
+    this.syncPostFX();
+  }
+
+  endExportRender(): void {
+    this.exporting = false;
+    this.subFrames = 1;
+    this.syncPostFX();
+  }
+
+  /** Creates, reconfigures or tears down the post pipeline for the current mode. */
+  private syncPostFX(): void {
+    const wanted = this.postFXAvailable && needsPostFX(this.preset, this.exporting);
+    if (!wanted) {
+      this.postFX?.dispose();
+      this.postFX = null;
+      return;
+    }
+    if (!this.postFX) {
+      this.postFX = new PostFX(this.renderer, this.outputWidth, this.outputHeight);
+    }
+    // Supersampling is an export-only luxury: in realtime the browser is already
+    // applying devicePixelRatio and doubling on top of that would drop a phone
+    // to single-digit frame rates for a preview nobody keeps.
+    this.postFX.configure({
+      bloom: this.preset.bloom,
+      bloomStrength: 0.55,
+      exposure: EXPOSURE,
+      supersample: this.exporting ? this.preset.supersample : 1,
+    });
+    this.postFX.setSize(this.outputWidth, this.outputHeight);
+  }
+
+  private syncEnvironment(): void {
+    if (!this.spec) return;
+    if (this.preset.env) {
+      if (!this.envTarget) {
+        const built = buildEnvironment(this.renderer, PALETTES[this.spec.palette]);
+        this.envTarget = built.target;
+        this.scene.environment = built.texture;
+      }
+    } else if (this.envTarget) {
+      this.scene.environment = null;
+      this.envTarget.dispose();
+      this.envTarget = null;
+    }
+  }
+
+  /**
+   * Marbles are the subject of every shot, so they get the one genuinely
+   * expensive material in the scene at the higher presets: clearcoat over a
+   * near-mirror base, which is what makes a sphere read as polished glass
+   * rather than as a coloured ball.
+   */
+  private makeMarbleMaterial(color: Color): Material {
+    if (this.preset.glossyMarbles) {
+      return new MeshPhysicalMaterial({
+        color,
+        metalness: 0.05,
+        roughness: 0.09,
+        clearcoat: 1,
+        clearcoatRoughness: 0.05,
+        envMapIntensity: 1.5,
+        emissive: color.clone().multiplyScalar(0.14),
+      });
+    }
+    return new MeshStandardMaterial({
+      color,
+      metalness: 0.35,
+      roughness: 0.18,
+      envMapIntensity: this.preset.env ? 1.2 : 0,
+      emissive: color.clone().multiplyScalar(0.28),
+    });
+  }
+
+  private syncMarbleMaterials(): void {
+    if (!this.spec) return;
+    this.marbleMeshes.forEach((mesh, index) => {
+      const marble = this.spec!.marbles[index];
+      if (!marble) return;
+      const previous = mesh.material as Material;
+      mesh.material = this.makeMarbleMaterial(
+        new Color(hslToHex(marble.hue, marble.sat, marble.light)),
+      );
+      previous.dispose();
+    });
   }
 
   // -------------------------------------------------------------- lifecycle
@@ -161,9 +316,13 @@ export class RaceScene {
     this.scene.fog = new Fog(palette.background, palette.fogNear, palette.fogFar);
 
     this.buildLights();
+    // Before the meshes: the environment map is what their materials sample,
+    // and building it first means no frame is ever drawn with it missing.
+    this.syncEnvironment();
     this.buildStars();
     this.buildTrackMesh();
     this.buildMarbles();
+    this.syncPostFX();
     this.resetCamera();
     this.updateVisuals(0);
   }
@@ -227,6 +386,13 @@ export class RaceScene {
     this.renderer.setSize(width, height, updateStyle);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+    // PostFX buffers are sized in device pixels, matching the drawing buffer
+    // rather than the CSS box — otherwise a HiDPI screen renders the effects at
+    // half resolution and the composite blurs the whole frame.
+    const ratio = this.renderer.getPixelRatio();
+    this.outputWidth = Math.max(1, Math.round(width * ratio));
+    this.outputHeight = Math.max(1, Math.round(height * ratio));
+    this.postFX?.setSize(this.outputWidth, this.outputHeight);
   }
 
   setPixelRatio(ratio: number): void {
@@ -234,6 +400,11 @@ export class RaceScene {
   }
 
   draw(): void {
+    if (this.postFX) {
+      this.postFX.renderSubFrame(this.scene, this.camera, 1);
+      this.postFX.resolve();
+      return;
+    }
     this.renderer.render(this.scene, this.camera);
   }
 
@@ -257,9 +428,31 @@ export class RaceScene {
    */
   renderFrameAt(time: number, frameDt: number): void {
     if (!this.sim) return;
-    this.sim.advanceTo(time);
-    this.updateVisuals(frameDt);
-    this.draw();
+
+    const samples = this.subFrames;
+    if (samples <= 1 || !this.postFX) {
+      this.sim.advanceTo(time);
+      this.updateVisuals(frameDt);
+      this.draw();
+      return;
+    }
+
+    // Accumulation motion blur: N draws spread across this frame's own
+    // duration, averaged. This is the real integral over the shutter, not a
+    // velocity-buffer approximation, so it blurs the spinning caps and the
+    // confetti correctly without any of them knowing about it.
+    //
+    // Sub-frame times only ever move forward, which is what `advanceTo`
+    // requires — and the camera's exponential smoothing composes exactly under
+    // subdivision, so a 4-sample frame lands the camera in the same place a
+    // 1-sample frame would.
+    const weight = 1 / samples;
+    for (let i = 0; i < samples; i++) {
+      this.sim.advanceTo(time + (i * frameDt) / samples);
+      this.updateVisuals(frameDt / samples);
+      this.postFX.renderSubFrame(this.scene, this.camera, weight);
+    }
+    this.postFX.resolve();
   }
 
   // -------------------------------------------------------------- build
@@ -325,24 +518,23 @@ export class RaceScene {
     const tubular = clamp(Math.round(track.total / 0.9), 240, 1600);
     const tubeGeo = new TubeGeometry(curve, tubular, track.tubeRadius, 16, false);
 
-    group.add(
-      new Mesh(
-        tubeGeo,
-        new MeshStandardMaterial({
-          color: palette.glass,
-          metalness: 0.1,
-          roughness: 0.22,
-          transparent: true,
-          // Back faces only. Drawing both walls stacks the tint twice and puts
-          // a foggy near wall between the camera and the marbles it is chasing;
-          // showing just the far wall reads as a clean channel from outside and
-          // keeps the pack legible from inside.
-          opacity: palette.glassOpacity * 1.5,
-          side: BackSide,
-          depthWrite: false,
-        }),
-      ),
-    );
+    this.tubeMaterial = new MeshStandardMaterial({
+      color: palette.glass,
+      metalness: 0.1,
+      roughness: 0.22,
+      // Reflections on the chute are what stop it reading as coloured cellophane,
+      // but they stay subtler than the marbles' — it is scenery, not the subject.
+      envMapIntensity: this.preset.env ? 1.1 : 0,
+      transparent: true,
+      // Back faces only. Drawing both walls stacks the tint twice and puts
+      // a foggy near wall between the camera and the marbles it is chasing;
+      // showing just the far wall reads as a clean channel from outside and
+      // keeps the pack legible from inside.
+      opacity: palette.glassOpacity * 1.5,
+      side: BackSide,
+      depthWrite: false,
+    });
+    group.add(new Mesh(tubeGeo, this.tubeMaterial));
 
     // Ribs every few metres instead of a wireframe.
     //
@@ -436,15 +628,7 @@ export class RaceScene {
     const spec = this.spec!;
     this.marbleMeshes = spec.marbles.map((marble) => {
       const color = new Color(hslToHex(marble.hue, marble.sat, marble.light));
-      const mesh = new Mesh(
-        this.marbleGeo,
-        new MeshStandardMaterial({
-          color,
-          metalness: 0.35,
-          roughness: 0.18,
-          emissive: color.clone().multiplyScalar(0.28),
-        }),
-      );
+      const mesh = new Mesh(this.marbleGeo, this.makeMarbleMaterial(color));
       // A white pole makes the roll visible; without it a sphere sliding and a
       // sphere rolling look identical.
       const cap = new Mesh(this.capGeo, new MeshBasicMaterial({ color: 0xffffff }));
@@ -699,12 +883,22 @@ export class RaceScene {
     this.clearConfetti();
     for (const mesh of this.marbleMeshes) {
       this.scene.remove(mesh);
-      (mesh.material as MeshStandardMaterial).dispose();
+      (mesh.material as Material).dispose();
       for (const child of mesh.children) {
         if (child instanceof Mesh) (child.material as MeshBasicMaterial).dispose();
       }
     }
     this.marbleMeshes = [];
+    this.tubeMaterial = null;
+
+    // The environment is per palette, and the next race may well be a different
+    // world. Leaking one prefiltered cubemap per race is the kind of thing that
+    // only shows up after someone presses "nueva carrera" thirty times.
+    if (this.envTarget) {
+      this.scene.environment = null;
+      this.envTarget.dispose();
+      this.envTarget = null;
+    }
 
     if (this.trackGroup) {
       this.scene.remove(this.trackGroup);
@@ -735,6 +929,8 @@ export class RaceScene {
   dispose(): void {
     this.stop();
     this.disposeRace();
+    this.postFX?.dispose();
+    this.postFX = null;
     this.marbleGeo.dispose();
     this.capGeo.dispose();
     this.renderer.dispose();

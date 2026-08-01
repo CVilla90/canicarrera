@@ -74,6 +74,75 @@ when something in the frame loop misbehaves.
 | W10 Replit deploy + phone/Safari smoke test | ⚠️ **not published** — `.replit` written, repo pushed, deploy path verified locally (see below); the Replit half is untouched |
 | W11 telemetry | ✅ writing; no panel (as planned) |
 
+## Render presets and the quality ladder (added 2026-08-01)
+
+**The strategic call: there is no server-side render, ever.** Path B (Blender /
+Playwright / SwiftShader) is **cancelled** — it was the only component that
+would have cost money per video, and it was never buying quality the client
+cannot reach. Everything below runs on the user's GPU at $0 to us.
+
+Two independent axes, deliberately not conflated:
+
+| Axis | Owner | What it controls |
+|---|---|---|
+| **Video format** | `client/export/quality.ts` | resolution, fps, bitrate |
+| **Visual preset** | `client/render/presets.ts` | bloom, IBL, materials, supersampling, motion blur |
+
+Four presets — **Ligero / Estándar / Alto / Ultra**. New files:
+
+```
+client/render/presets.ts      the four presets + drawCost(). All data.
+client/render/cost.ts         pure cost arithmetic — no DOM, so npm test covers it
+client/render/budget.ts       the ladder + planForBudget()
+client/render/PostFX.ts       HDR pipeline: accumulate -> bloom -> ACES -> canvas
+client/render/environment.ts  procedural PMREM env map, per palette, zero bytes
+```
+
+### The three rails
+
+1. **A preset can never touch the sim.** Nothing in `presets.ts` is an input to
+   `RaceSpec`, `RaceSim` or curation. Same seed is the same race on a phone and
+   on a workstation; only pixels differ. `SIM_VERSION` is still 1 and share
+   links are unaffected. A test asserts no preset field shares a name with a
+   spec field.
+2. **Everything is data.** Retuning or reordering presets, budgets or the
+   ladder is an edit to one array. No logic enumerates them.
+3. **Nothing costs us anything.** No server render, no downloaded assets — the
+   environment map is generated, not fetched.
+
+### Why the exported MP4 can look better than the preview
+
+The export loop has no clock, so a frame may cost ten times a realtime frame.
+**Supersampling (2x) and accumulation motion blur (N sub-frames averaged) are
+export-only** and are what separate a game from a render. Bloom, IBL and
+materials apply to both, so the preview still shows what you will get.
+
+### The UX inversion
+
+The user picks **how long they will wait** (Rápido 10 s / Equilibrado 30 s /
+Máxima calidad 120 s) and `planForBudget` returns the richest ladder rung that
+fits. Manual overrides for both axes live in the advanced panel, every option
+selectable, **each showing its own honest ETA in parentheses** computed against
+the current setting of the other axis. Touching either axis clears `auto`; a
+"volver a lo automático" link brings it back.
+
+The ladder's taste judgement, written as a plain list so it can be re-ordered:
+**past 1080p, shading beats pixels.** It climbs to 1080p60, spends the next
+budget on presets, and only reaches 1440p/4K once Ultra is affordable.
+
+### The cost model now uses both measured numbers
+
+`rasterFps` was measured and thrown away before. It is now load-bearing:
+
+```
+seconds = frames * (drawSeconds * pixels * drawCost + encodeSeconds * pixels)
+```
+
+Supersampling and motion blur multiply the **draw** only — the encoder still
+receives exactly one frame per output frame. Charging preset cost to the whole
+pipeline would badly over-estimate Ultra on machines with software encoders,
+which are exactly the machines that most need the number to be right.
+
 ## Deliberately not built
 
 - **Tier C** (browsers with no `VideoEncoder`, i.e. Firefox Android): the
@@ -82,7 +151,9 @@ when something in the frame loop misbehaves.
   implemented. Those browsers currently get an honest message and a copyable
   link, not a broken button. Per PLAN §2.3, check telemetry before spending a
   weekend on it.
-- **Tier D** (server render): stubbed at the API only.
+- **Tier D** (server render): stubbed at the API only, and now **cancelled as a
+  direction** — see the quality-ladder section above. The API stub stays because
+  the client already speaks the protocol and removing it buys nothing.
 - Audio, accounts, YouTube upload, admin panel — Stage 1+.
 
 ## Known issues
@@ -130,6 +201,32 @@ when something in the frame loop misbehaves.
   tube is ~8000 edges and reads as solid paint; a coarse one reads as a debug
   cage.
 
+### From the render-preset work (2026-08-01)
+
+Three bugs, all of which *looked like they were working*. Each one is a reason
+the browser check matters more than the typecheck:
+
+- 🔴 **Never name a GLSL symbol the way three.js names one.** three prepends
+  `<tonemapping_pars_fragment>` to **every** `ShaderMaterial` it compiles, which
+  already defines `RRTAndODTFit`, `ACESInputMat` and `ACESOutputMat`. Reusing
+  those names gave `'RRTAndODTFit' : function already has a body`, the composite
+  program silently failed to link, and — because the canvas has
+  `preserveDrawingBuffer` — **the previous frame stayed on screen**. The
+  screenshot looked perfect. The only symptom was a `GL_INVALID_OPERATION`
+  nobody was checking. Every symbol in `PostFX.ts` is now prefixed `cani`.
+- 🔴 **`renderer.autoClear` defaults to TRUE**, so the accumulation pass was
+  clearing the accumulator immediately before additively blending each sub-frame
+  into it. Motion blur would have silently reduced to "the last sub-frame" — no
+  error, no black frame, just a video indistinguishable from the cheap preset.
+  Every clear in `PostFX.ts` is now explicit and `autoClear` is forced off.
+- **An unmeasured machine must not be dropped to the cheapest preset.** The
+  preset also drives the *live preview*, and the probe deliberately refuses to
+  run in a hidden tab — so anyone opening a shared link in a background tab
+  would have permanently seen a worse-looking app. Unmeasured now means
+  conservative **resolution** but standard **preset**.
+- **Verify a canvas by clearing it to magenta first.** A frame that "looks
+  right" may be the last good frame still sitting in the drawing buffer.
+
 ## Deploy pre-flight (run 2026-08-01, all green)
 
 The exact commands Replit will run were run locally against the built output,
@@ -159,10 +256,17 @@ error — that is the failure mode to recognise.
    Confirm the machine-power slider stops match PLAN §1.2 while you are in there
    (risk R2).
 2. **Smoke test on a phone and on Safari** — especially a sustained export, watching
-   memory (PLAN §R3b).
-3. **Re-check the export ETA** against a real foreground export (issue 1 above).
-4. Then Stage 1: audio first (a silent race video is a weak YouTube upload), or
-   tier C if telemetry says people are hitting it.
+   memory (PLAN §R3b). ⚠️ Now more important than before: the presets add
+   supersampled half-float buffers. `Alto` at 1080p allocates 2560x1440
+   half-float targets, and a phone that survives `Ligero` may not survive that.
+   `PostFX.isSupported` gates on the extension, **not on memory**.
+3. **B1 — re-check the export ETA against a real foreground export.** Now the
+   input to the entire quality ladder, not just a loose end. Telemetry already
+   records `predicted` next to the real elapsed time on every `export_finished`
+   event, so one real export answers it.
+4. Then Stage 1 **audio** (a silent race video is a weak YouTube upload), and
+   **billboards** — scene objects, not a DOM overlay, because the MP4 is what
+   gets shared and a CSS watermark never reaches it.
 
 ## Roadmap detail added 2026-07-27 (design only, nothing built)
 

@@ -476,8 +476,20 @@ that reads it can wait, the writing of it cannot.
 ## 5. Stage roadmap
 
 ### Stage 1 — Server render + audio *(the fallback becomes a feature)*
-- Playwright + Chromium + SwiftShader worker, ffmpeg encode, Object Storage output,
-  polling job API. Runs at 4 vCPU / 8 GiB — the one component that earns it.
+
+> 🔴 **DECISION 2026-08-01: the server-render half of this stage is CANCELLED.**
+> Path B was the only component that would have cost real money per video, and
+> it was never buying quality the client cannot reach — only reaching users
+> whose *hardware* cannot. That is a much narrower problem than a per-video
+> bill. The replacement is the **client-side quality ladder**: render presets
+> (bloom, IBL, physical materials, 2x supersampling, accumulation motion blur)
+> chosen by a **time budget** the user picks, all running on their GPU at $0 to
+> us. Built and shipped; see `HANDOFF.md`. Everything below about Playwright,
+> SwiftShader, ffmpeg, Object Storage and per-video quotas is **retained for
+> the record only**. Audio remains live and is the next thing to build.
+
+- ~~Playwright + Chromium + SwiftShader worker, ffmpeg encode, Object Storage output,
+  polling job API. Runs at 4 vCPU / 8 GiB — the one component that earns it.~~
 - **Audio**: music bed + marble impact SFX, muxed via WebCodecs `AudioEncoder`
   (AAC). A silent race video is a weak YouTube upload.
 - Cost control from day one: rate limit, per-user quota, and a hard cap, because

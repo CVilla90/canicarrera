@@ -45,3 +45,15 @@ export const DEFAULT_QUALITY_ID = '1080p60';
 
 export const qualityById = (id: string): Quality =>
   QUALITIES.find((q) => q.id === id) ?? QUALITIES[1];
+
+const REFERENCE_PIXELS = 1920 * 1080;
+
+/**
+ * Resolution relative to 1080p, which is what the benchmark measures at.
+ *
+ * Deliberately NOT `costFactor` above: that one folds in fps, which belongs to
+ * the frame *count*, not to the cost of any single frame. Multiplying by both
+ * would charge the frame rate twice.
+ */
+export const pixelFactor = (quality: Quality): number =>
+  (quality.width * quality.height) / REFERENCE_PIXELS;

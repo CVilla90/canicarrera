@@ -17,6 +17,7 @@ import type { RaceSpec } from '@shared/spec.ts';
 import type { RaceScene } from '../scene/RaceScene.ts';
 import { WebCodecsEncoder } from './encoder.ts';
 import type { Quality } from './quality.ts';
+import type { RenderPreset } from '../render/presets.ts';
 
 /** Pause drawing when this many frames are already queued for the encoder. */
 const QUEUE_HIGH_WATER = 10;
@@ -47,6 +48,8 @@ export interface ExportOptions {
   scene: RaceScene;
   spec: RaceSpec;
   quality: Quality;
+  /** Visual fidelity. Independent of `quality`, and never an input to the sim. */
+  preset: RenderPreset;
   onProgress?: (progress: ExportProgress) => void;
   signal?: AbortSignal;
 }
@@ -85,6 +88,7 @@ export async function exportRace({
   scene,
   spec,
   quality,
+  preset,
   onProgress,
   signal,
 }: ExportOptions): Promise<ExportResult> {
@@ -111,6 +115,13 @@ export async function exportRace({
   const previousRatio = scene.renderer.getPixelRatio();
   const wasRunning = scene.isRunning;
   scene.stop();
+
+  // Offline mode: supersampled buffers and sub-frame accumulation come on here
+  // and go off in the `finally`. Order matters — the preset decides how many
+  // sub-frames, `beginExportRender` allocates for it, and `setSize` then sizes
+  // those buffers to the export resolution rather than the display's.
+  scene.setRenderPreset(preset);
+  scene.beginExportRender(preset.motionBlur);
 
   // Render at export resolution into the visible canvas with `updateStyle`
   // off: the CSS size is untouched, so the user watches the frames being
@@ -188,6 +199,9 @@ export async function exportRace({
     encoder?.abort();
     throw error;
   } finally {
+    // Leave offline mode before resizing, so the supersampled buffers are not
+    // briefly reallocated at display size on the way out.
+    scene.endExportRender();
     scene.setPixelRatio(previousRatio);
     scene.setSize(displayWidth, displayHeight, true);
     scene.restart();

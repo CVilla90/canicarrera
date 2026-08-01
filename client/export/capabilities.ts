@@ -10,18 +10,32 @@
  * The measurement is not a proxy for the ETA. Export runs offline, as fast as
  * the machine allows, so measured seconds-per-frame times frame count IS the
  * ETA. That is what goes on the button.
+ *
+ * ## Two numbers, not one
+ *
+ * `rasterFps` (draw only) and `pipelineFps` (draw + encode + mux) are both
+ * measured, and the difference between them is the encoder's share of a frame.
+ * That split is what makes the render presets estimable: supersampling and
+ * motion blur multiply the DRAW and leave the encode alone, because the encoder
+ * still receives exactly one frame per output frame however many sub-frames
+ * were averaged to make it. Charging preset cost to the whole pipeline would
+ * over-estimate Ultra badly on machines with slow software encoders.
  */
 import type { RaceScene } from '../scene/RaceScene.ts';
 import { WebCodecsEncoder, hasWebCodecs, pickCodec } from './encoder.ts';
-import { QUALITIES, qualityById, type Quality } from './quality.ts';
+import { QUALITIES, qualityById, pixelFactor, type Quality } from './quality.ts';
+import { baselinePreset, drawCost, type RenderPreset } from '../render/presets.ts';
+import { exportSeconds } from '../render/cost.ts';
+
+export { pixelFactor };
 
 /** Tier A/B still export for free; C is slow but free; only D would cost us. */
 export type Tier = 'A' | 'B' | 'C' | 'D';
 
 export interface Benchmark {
-  /** Draw-only throughput at 1920x1080, frames per second. */
+  /** Draw-only throughput at 1920x1080, baseline preset, frames per second. */
   rasterFps: number;
-  /** Full draw -> VideoFrame -> encode -> mux throughput at 1920x1080. */
+  /** Full draw -> VideoFrame -> encode -> mux throughput at the same settings. */
   pipelineFps: number;
   measuredAt: number;
 }
@@ -33,28 +47,29 @@ export interface Capability {
   hardwareAccelerated: boolean;
   /** Quality ids the browser confirmed it can configure. */
   supported: string[];
+  /** Can this GPU render into a half-float target? Gates every preset above Ligero. */
+  postFX: boolean;
   benchmark: Benchmark | null;
-  /** Quality id we default to. */
-  recommended: string;
   /** Spanish, shown to the user when it matters. */
   note: string | null;
 }
 
-const REFERENCE_PIXELS = 1920 * 1080;
-const CACHE_KEY = 'canicarrera.capability.v1';
+// Bumped from v1: the cached shape now has to be interpreted against a known
+// baseline preset, so a v1 measurement is not comparable and must be retaken.
+const CACHE_KEY = 'canicarrera.capability.v2';
 
-export const pixelFactor = (quality: Quality): number =>
-  (quality.width * quality.height) / REFERENCE_PIXELS;
-
-/** Seconds this machine needs to export `frames` frames at `quality`. */
+/**
+ * Seconds this machine needs to export `frames` frames at `quality` + `preset`.
+ *
+ * draw scales with pixels AND preset cost; encode scales with pixels only.
+ */
 export function estimateSeconds(
   capability: Capability,
   quality: Quality,
+  preset: RenderPreset,
   frames: number,
 ): number | null {
-  if (!capability.benchmark || capability.benchmark.pipelineFps <= 0) return null;
-  const secondsPerFrame = 1 / capability.benchmark.pipelineFps;
-  return frames * secondsPerFrame * pixelFactor(quality);
+  return exportSeconds(capability.benchmark, pixelFactor(quality), drawCost(preset), frames);
 }
 
 function tierFor(webCodecs: boolean, hardware: boolean, pipelineFps: number): Tier {
@@ -64,22 +79,14 @@ function tierFor(webCodecs: boolean, hardware: boolean, pipelineFps: number): Ti
   return 'C';
 }
 
-function recommend(capability: Omit<Capability, 'recommended' | 'note'>): string {
-  const fps = capability.benchmark?.pipelineFps ?? 0;
-  const affordable = QUALITIES.filter((q) => capability.supported.includes(q.id));
-  if (affordable.length === 0) return '720p30';
-  // Aim for an export that finishes in about half a minute for a typical race.
-  const budgetSeconds = 30;
-  const typicalFrames = (q: Quality) => 70 * q.fps;
-  const best = affordable.filter((q) => {
-    if (fps <= 0) return q.id === '720p30';
-    return (typicalFrames(q) / fps) * pixelFactor(q) <= budgetSeconds;
-  });
-  return (best[best.length - 1] ?? affordable[0]).id;
-}
-
 /**
  * Runs a real, small export and times it.
+ *
+ * Always measured at the BASELINE preset, whatever the user currently has
+ * selected. The cost model extrapolates from there, so changing a setting never
+ * silently invalidates the number on the button — and a single measurement
+ * taken while Ultra happened to be selected cannot make every other row look
+ * four times slower than it is.
  *
  * Deliberately destructive to the scene's sim state — it restarts the race
  * before and after, so the caller can run this immediately before the countdown
@@ -100,7 +107,10 @@ async function benchmarkScene(scene: RaceScene): Promise<Benchmark | null> {
   const previousWidth = canvas.width;
   const previousHeight = canvas.height;
   const previousRatio = scene.renderer.getPixelRatio();
+  const previousPreset = scene.renderPreset;
 
+  scene.setRenderPreset(baselinePreset());
+  scene.beginExportRender(1);
   scene.setPixelRatio(1);
   scene.setSize(reference.width, reference.height, false);
   scene.restart();
@@ -152,6 +162,8 @@ async function benchmarkScene(scene: RaceScene): Promise<Benchmark | null> {
   } catch {
     return null;
   } finally {
+    scene.endExportRender();
+    scene.setRenderPreset(previousPreset);
     scene.setPixelRatio(previousRatio);
     scene.setSize(previousWidth / previousRatio, previousHeight / previousRatio, false);
     scene.restart();
@@ -170,6 +182,7 @@ export async function probeCapability(
   options: ProbeOptions = {},
 ): Promise<Capability> {
   const webCodecs = hasWebCodecs();
+  const postFX = scene.supportsPostFX;
 
   if (!webCodecs) {
     return {
@@ -178,8 +191,8 @@ export async function probeCapability(
       codec: null,
       hardwareAccelerated: false,
       supported: [],
+      postFX,
       benchmark: null,
-      recommended: '720p30',
       note: 'Tu navegador no puede generar video todavía. Puedes ver la carrera y copiar el enlace para exportarla desde Chrome, Edge o Safari.',
     };
   }
@@ -202,23 +215,18 @@ export async function probeCapability(
   const benchmark = cached ?? (await benchmarkScene(scene));
   if (benchmark && benchmark !== cached) writeCache(benchmark);
 
-  const base = {
-    tier: tierFor(webCodecs, hardware, benchmark?.pipelineFps ?? 0),
-    webCodecs,
-    codec,
-    hardwareAccelerated: hardware,
-    supported,
-    benchmark,
-  };
+  const tier = tierFor(webCodecs, hardware, benchmark?.pipelineFps ?? 0);
 
   let note: string | null = null;
-  if (base.tier === 'C') {
+  if (!postFX) {
+    note = 'Tu GPU no admite los efectos avanzados, así que solo está disponible la calidad Ligero. El video se exporta igual.';
+  } else if (tier === 'C') {
     note = 'Tu equipo puede exportar, pero despacio. Prueba 720p30 primero.';
   } else if (!hardware) {
     note = 'Tu navegador está codificando por software. Funciona, pero tarda más.';
   }
 
-  return { ...base, recommended: recommend(base), note };
+  return { tier, webCodecs, codec, hardwareAccelerated: hardware, supported, postFX, benchmark, note };
 }
 
 function readCache(): Benchmark | null {
@@ -229,7 +237,7 @@ function readCache(): Benchmark | null {
     // A month-old measurement is probably still true; a year-old one is not
     // worth trusting after a driver or hardware change.
     if (Date.now() - parsed.measuredAt > 30 * 24 * 3600 * 1000) return null;
-    return parsed.pipelineFps > 0 ? parsed : null;
+    return parsed.pipelineFps > 0 && parsed.rasterFps > 0 ? parsed : null;
   } catch {
     return null;
   }

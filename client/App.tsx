@@ -4,9 +4,11 @@ import { simulate } from '@shared/sim.ts';
 import { ARCHETYPES } from '@shared/generator.ts';
 
 import { RaceScene, type SceneSnapshot } from './scene/RaceScene.ts';
-import { probeCapability, type Capability } from './export/capabilities.ts';
+import { probeCapability, estimateSeconds, type Capability } from './export/capabilities.ts';
 import { exportRace, downloadBlob, ExportAborted, type ExportProgress, type ExportResult } from './export/exportRace.ts';
 import { qualityById } from './export/quality.ts';
+import { presetById, DEFAULT_PRESET_ID, type PresetId } from './render/presets.ts';
+import { planForBudget, budgetById, framesFor, DEFAULT_BUDGET_ID } from './render/budget.ts';
 import { createRace, fetchRace, requestRender, track, type RaceResult } from './lib/api.ts';
 import { detectLang, makeTranslate, type Lang } from './i18n.ts';
 
@@ -27,6 +29,8 @@ export function App(): React.ReactElement {
   const abortRef = useRef<AbortController | null>(null);
   const resultBlobRef = useRef<ExportResult | null>(null);
   const bootedRef = useRef(false);
+  /** What we promised on the button, kept so telemetry can compare it to reality. */
+  const exportPredictionRef = useRef<number | null>(null);
 
   const [lang, setLang] = useState<Lang>(detectLang);
   const [status, setStatus] = useState<Status>('booting');
@@ -42,7 +46,16 @@ export function App(): React.ReactElement {
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [exportResult, setExportResult] = useState<ExportResult | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  // Two independent quality axes plus the budget that drives them.
+  //
+  // `auto` is the important one: while it holds, the plan is recomputed from
+  // the measurement, so a user who never opens the advanced panel always gets
+  // the best their machine can do inside the wait they chose. Touching either
+  // axis by hand clears it, and nothing silently overrides them after that.
   const [qualityId, setQualityId] = useState('1080p30');
+  const [presetId, setPresetId] = useState<PresetId>(DEFAULT_PRESET_ID);
+  const [budgetId, setBudgetId] = useState(DEFAULT_BUDGET_ID);
+  const [auto, setAuto] = useState(true);
 
   const t = makeTranslate(lang);
 
@@ -115,13 +128,13 @@ export function App(): React.ReactElement {
         setStatus('measuring');
         const measured = await probeCapability(scene);
         setCapability(measured);
-        setQualityId(measured.recommended);
         track('capability_probe', {
           tier: measured.tier,
           codec: measured.codec,
           hardware: measured.hardwareAccelerated,
           rasterFps: measured.benchmark?.rasterFps ?? null,
           pipelineFps: measured.benchmark?.pipelineFps ?? null,
+          postFX: measured.postFX,
         });
       }
 
@@ -165,6 +178,43 @@ export function App(): React.ReactElement {
     }, 900);
     return () => clearTimeout(timer);
   }, [snapshot?.phase, panel, race]);
+
+  // -------------------------------------------------------------- quality plan
+
+  // While `auto` holds, the plan is derived rather than stored: measurement
+  // plus chosen budget in, resolution plus preset out. It recomputes when any
+  // input changes — including on a new race, because a 40-second race can
+  // afford a richer preset than a 90-second one on the very same machine.
+  useEffect(() => {
+    if (!auto || !capability || videoDuration <= 0) return;
+    const plan = planForBudget(capability, videoDuration, budgetById(budgetId).seconds);
+    setQualityId(plan.qualityId);
+    setPresetId(plan.presetId);
+  }, [auto, capability, videoDuration, budgetId]);
+
+  // The preview is meant to show what the export will look like, so bloom,
+  // reflections and materials all apply to live playback. Only supersampling
+  // and motion blur are held back for the offline path, where a frame is
+  // allowed to cost ten times what a realtime frame can.
+  useEffect(() => {
+    sceneRef.current?.setRenderPreset(presetById(presetId));
+  }, [presetId]);
+
+  const chooseQuality = useCallback((id: string): void => {
+    setAuto(false);
+    setQualityId(id);
+  }, []);
+
+  const choosePreset = useCallback((id: PresetId): void => {
+    setAuto(false);
+    setPresetId(id);
+  }, []);
+
+  const chooseBudget = useCallback((id: string): void => {
+    // Picking a budget is how you ask for the automatic plan back.
+    setAuto(true);
+    setBudgetId(id);
+  }, []);
 
   // -------------------------------------------------------------- actions
 
@@ -210,6 +260,7 @@ export function App(): React.ReactElement {
     if (!scene || !race) return;
 
     const quality = qualityById(qualityId);
+    const preset = presetById(presetId);
     const controller = new AbortController();
     abortRef.current = controller;
     exportInFlight.current = true;
@@ -218,6 +269,10 @@ export function App(): React.ReactElement {
     setExportPhase('running');
     setExportError(null);
     setExportProgress(null);
+
+    exportPredictionRef.current = capability
+      ? estimateSeconds(capability, quality, preset, framesFor(quality, videoDuration))
+      : null;
 
     // Tell the server a render is happening. Stage 0 always gets
     // `mode: "client"` back; the call exists so the protocol is already in
@@ -233,21 +288,29 @@ export function App(): React.ReactElement {
         scene,
         spec: race.spec,
         quality,
+        preset,
         signal: controller.signal,
         onProgress: setExportProgress,
       });
       resultBlobRef.current = result;
       setExportResult(result);
       setExportPhase('done');
-      downloadBlob(result.blob, `canicarrera-${race.spec.seed}-${quality.id}.mp4`);
+      downloadBlob(result.blob, `canicarrera-${race.spec.seed}-${quality.id}-${preset.id}.mp4`);
       track(
         'export_finished',
         {
           quality: quality.id,
+          preset: preset.id,
+          auto,
+          budget: budgetId,
           frames: result.frames,
           seconds: result.elapsedMs / 1000,
           fps: result.fps,
           bytes: result.blob.size,
+          // The promise on the button, alongside what actually happened. This
+          // pair is the only way to find out whether the cost model is honest
+          // on hardware we do not own.
+          predicted: exportPredictionRef.current,
         },
         race.id,
         race.spec.seed,
@@ -259,13 +322,18 @@ export function App(): React.ReactElement {
         const detail = error instanceof Error ? error.message : String(error);
         setExportError(t('error.export', { detail }));
         setExportPhase('error');
-        track('export_failed', { quality: quality.id, detail }, race.id, race.spec.seed);
+        track(
+          'export_failed',
+          { quality: quality.id, preset: preset.id, detail },
+          race.id,
+          race.spec.seed,
+        );
       }
     } finally {
       exportInFlight.current = false;
       abortRef.current = null;
     }
-  }, [race, qualityId, lang]);
+  }, [race, qualityId, presetId, auto, budgetId, capability, videoDuration, lang]);
 
   // Measure lazily if the first attempt could not.
   //
@@ -290,7 +358,10 @@ export function App(): React.ReactElement {
     setStatus('measuring');
     const measured = await probeCapability(scene, { force: true });
     setCapability(measured);
-    setQualityId(measured.recommended);
+    // No need to touch the selection: if `auto` is on, the plan effect will
+    // recompute it from this new measurement; if it is off, the user chose
+    // these settings deliberately and a re-measurement is not permission to
+    // change them.
     setStatus('ready');
     if (wasRunning) scene.start();
   }, []);
@@ -379,8 +450,14 @@ export function App(): React.ReactElement {
                     phase={exportPhase}
                     capability={capability}
                     videoDuration={videoDuration}
-                    selectedId={qualityId}
-                    onSelect={setQualityId}
+                    qualityId={qualityId}
+                    presetId={presetId}
+                    budgetId={budgetId}
+                    auto={auto}
+                    onSelectQuality={chooseQuality}
+                    onSelectPreset={choosePreset}
+                    onSelectBudget={chooseBudget}
+                    onResetAuto={() => setAuto(true)}
                     progress={exportProgress}
                     result={exportResult}
                     error={exportError}
@@ -391,7 +468,10 @@ export function App(): React.ReactElement {
                     onDownloadAgain={() => {
                       const result = resultBlobRef.current;
                       if (result && race) {
-                        downloadBlob(result.blob, `canicarrera-${race.spec.seed}-${qualityId}.mp4`);
+                        downloadBlob(
+                          result.blob,
+                          `canicarrera-${race.spec.seed}-${qualityId}-${presetId}.mp4`,
+                        );
                       }
                     }}
                     t={t}
