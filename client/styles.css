@@ -1,0 +1,313 @@
+@import 'tailwindcss';
+
+/*
+ * Design notes, so the next person does not have to reverse-engineer the
+ * intent:
+ *
+ * The scene is dark because it is a night race in a void — that is the canvas,
+ * not the brand. The identity lives in the HUD: a title-safe frame borrowed
+ * from broadcast, condensed type in the timing tower (narrow column, narrow
+ * face), expanded type in the wordmark, and one signature idea —
+ *
+ *   the entire UI chrome takes the colour of whoever is currently leading.
+ *
+ * That is `--leader`, set from JS every frame. It encodes something true about
+ * the race rather than decorating it, and it means no fixed accent colour was
+ * ever chosen. Everything else stays quiet.
+ */
+
+@theme {
+  --color-ink: #05070d;
+  --color-slab: #080c14;
+  --color-bone: #f2efe6;
+  --color-dim: #79839a;
+  --color-flag: #ffc53d;
+  --color-rule: rgba(242, 239, 230, 0.14);
+
+  --font-display: 'Archivo', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', 'Consolas', 'Cascadia Mono', monospace;
+}
+
+:root {
+  /* Overwritten from JS with the leader's marble colour. */
+  --leader: #f2efe6;
+  --safe: 22px;
+}
+
+@media (max-width: 640px) {
+  :root {
+    --safe: 12px;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  background: var(--color-ink);
+  color: var(--color-bone);
+  font-family: var(--font-display);
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+}
+
+canvas {
+  display: block;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--leader);
+  outline-offset: 3px;
+}
+
+/* ---------------------------------------------------------------- type */
+
+.u-wide {
+  font-stretch: 118%;
+  letter-spacing: 0.02em;
+}
+
+.u-narrow {
+  font-stretch: 76%;
+}
+
+.u-label {
+  font-stretch: 82%;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--color-dim);
+}
+
+.u-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------- surfaces */
+
+/*
+ * Broadcast lower-third, not a glass card: a solid slab with one hard colour
+ * rail on the left edge. Corners are nearly square because data panels in real
+ * timing graphics are.
+ */
+.slab {
+  background: color-mix(in srgb, var(--color-slab) 88%, transparent);
+  backdrop-filter: blur(14px) saturate(1.2);
+  border: 1px solid var(--color-rule);
+  border-left: 2px solid var(--leader);
+  border-radius: 3px;
+}
+
+.slab-quiet {
+  border-left-color: var(--color-rule);
+}
+
+/* The title-safe area a broadcast camera operator frames to. Here it is the
+   page's only structural decoration, and it doubles as the export viewport. */
+.safe-frame {
+  position: fixed;
+  inset: var(--safe);
+  pointer-events: none;
+  z-index: 5;
+}
+
+.safe-tick {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-color: color-mix(in srgb, var(--leader) 55%, transparent);
+  transition: border-color 0.6s linear;
+}
+
+/* ---------------------------------------------------------------- controls */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 13px 22px;
+  border: 1px solid var(--color-rule);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--color-slab) 88%, transparent);
+  backdrop-filter: blur(14px);
+  font-stretch: 88%;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  transition:
+    border-color 0.18s,
+    color 0.18s,
+    background 0.18s,
+    transform 0.12s;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--leader);
+  color: var(--leader);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--leader);
+  border-color: var(--leader);
+  color: #05070d;
+  font-weight: 700;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--leader) 82%, #ffffff);
+  border-color: color-mix(in srgb, var(--leader) 82%, #ffffff);
+  color: #05070d;
+}
+
+.btn-ghost {
+  background: transparent;
+  backdrop-filter: none;
+}
+
+.input-seed {
+  background: rgba(5, 7, 13, 0.6);
+  border: 1px solid var(--color-rule);
+  border-radius: 3px;
+  padding: 9px 12px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-bone);
+  width: 100%;
+}
+
+.input-seed:focus {
+  border-color: var(--leader);
+  outline: none;
+}
+
+/* ---------------------------------------------------------------- start lights */
+
+/*
+ * Five lights that illuminate one by one and then all go out — the real signal
+ * a racing audience already knows. It replaces a "3 2 1" counter, which every
+ * generator UI has.
+ */
+.light {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  transition: background 0.12s linear, box-shadow 0.12s linear;
+}
+
+.light-on {
+  background: #ff2d2d;
+  box-shadow:
+    0 0 22px rgba(255, 45, 45, 0.75),
+    inset 0 0 8px rgba(255, 160, 160, 0.6);
+  border-color: rgba(255, 120, 120, 0.5);
+}
+
+.light-go {
+  background: #2dff88;
+  box-shadow:
+    0 0 26px rgba(45, 255, 136, 0.8),
+    inset 0 0 8px rgba(180, 255, 220, 0.6);
+  border-color: rgba(120, 255, 190, 0.5);
+}
+
+/* ---------------------------------------------------------------- timing tower */
+
+.tower-row {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px 7px;
+  position: relative;
+  border-left: 2px solid transparent;
+  transition: background 0.2s linear, border-color 0.2s linear;
+}
+
+.tower-row + .tower-row {
+  border-top: 1px solid rgba(242, 239, 230, 0.06);
+}
+
+.tower-bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  transition: width 0.22s linear;
+}
+
+/* ---------------------------------------------------------------- motion */
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.animate-rise {
+  animation: rise 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+.animate-sweep {
+  animation: sweep 1.4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-rise,
+  .animate-sweep {
+    animation: none;
+  }
+  * {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Thin scrollbars inside the results list, where content can overflow. */
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-rule) transparent;
+}
