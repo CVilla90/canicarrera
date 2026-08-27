@@ -27,18 +27,22 @@ import {
   BufferGeometry,
   Color,
   ConeGeometry,
+  CylinderGeometry,
   Group,
   InstancedMesh,
   Matrix4,
   Mesh,
+  MeshBasicMaterial,
   MeshStandardMaterial,
   OctahedronGeometry,
   PlaneGeometry,
+  PointLight,
   Points,
   PointsMaterial,
   Quaternion,
   ShaderMaterial,
   SphereGeometry,
+  TorusGeometry,
   Vector3,
   type BufferGeometry as Geometry,
 } from 'three';
@@ -47,6 +51,11 @@ import type { Palette } from '@shared/palette.ts';
 import type { Track } from '@shared/track.ts';
 import { COSMETIC, stream } from '@shared/rng.ts';
 import { buildPropLayout } from './WorldLayout.ts';
+import {
+  buildDesertMineTunnelLayout,
+  type DesertMineTunnelLayout,
+  type LayoutVec3,
+} from './SetPieceLayout.ts';
 
 const SKY_VERTEX = /* glsl */ `
   varying vec3 vDir;
@@ -271,6 +280,126 @@ function moteDrift(palette: Palette): Vector3 {
   }
 }
 
+const vector = (value: LayoutVec3): Vector3 => new Vector3(value.x, value.y, value.z);
+
+/**
+ * Turns the pure mine contract into a deliberately simple vertical slice.
+ *
+ * Two open faceted cylinders provide separate outside and inside surfaces. This
+ * gives the tunnel real thickness without CSG, while the portals and timber
+ * frames explain the opening from both directions. Everything is static except
+ * for ordinary Three.js lights, so preview and offline export see identical
+ * geometry at every simulation time.
+ */
+function buildDesertMineTunnel(layout: DesertMineTunnelLayout): Group {
+  const group = new Group();
+  group.name = 'desert-mine-tunnel';
+
+  const axis = vector(layout.axis).normalize();
+  const centre = vector(layout.centre);
+  const shellLength = vector(layout.exit.p).distanceTo(vector(layout.entrance.p));
+  const cylinderRotation = new Quaternion().setFromUnitVectors(new Vector3(0, 1, 0), axis);
+
+  const outer = new Mesh(
+    new CylinderGeometry(
+      layout.outerRadius * 0.98,
+      layout.outerRadius * 1.04,
+      shellLength,
+      11,
+      1,
+      true,
+    ),
+    new MeshStandardMaterial({ color: 0x4a2d1d, roughness: 1, metalness: 0 }),
+  );
+  outer.name = 'mine-rock-shell';
+  outer.position.copy(centre);
+  outer.quaternion.copy(cylinderRotation);
+  group.add(outer);
+
+  const lining = new Mesh(
+    new CylinderGeometry(
+      layout.interiorRadius,
+      layout.interiorRadius,
+      shellLength + 0.12,
+      11,
+      1,
+      true,
+    ),
+    new MeshStandardMaterial({
+      color: 0x241813,
+      roughness: 0.96,
+      metalness: 0,
+      side: BackSide,
+    }),
+  );
+  lining.name = 'mine-interior-lining';
+  lining.position.copy(centre);
+  lining.quaternion.copy(cylinderRotation);
+  group.add(lining);
+
+  // A pair of heavy iron rims makes both transitions legible at race speed.
+  const portalGeometry = new TorusGeometry(layout.interiorRadius + 0.02, 0.42, 8, 28);
+  const portalMaterial = new MeshStandardMaterial({
+    color: 0x6c4227,
+    roughness: 0.86,
+    metalness: 0.12,
+  });
+  const portalForward = new Vector3(0, 0, 1);
+  for (const [name, portal] of [
+    ['mine-entrance', layout.entrance],
+    ['mine-exit', layout.exit],
+  ] as const) {
+    const rim = new Mesh(portalGeometry, portalMaterial);
+    rim.name = name;
+    rim.position.copy(vector(portal.p));
+    rim.quaternion.setFromUnitVectors(portalForward, vector(portal.t).normalize());
+    group.add(rim);
+  }
+
+  // Wall-hugging ribs instead of square roof beams. A chase camera rides as
+  // high as 4.4 m above the chute; a rectangular cross-beam at that height
+  // slices the entire broadcast frame in half. The inner edge of these ribs is
+  // outside the explicit 5.5 m camera envelope.
+  const timberGeometry = new TorusGeometry(layout.interiorRadius - 0.35, 0.22, 6, 20);
+  const timbers = new InstancedMesh(
+    timberGeometry,
+    new MeshStandardMaterial({ color: 0x5b351f, roughness: 0.93, metalness: 0 }),
+    layout.supports.length,
+  );
+  timbers.name = 'mine-timber-supports';
+  const matrix = new Matrix4();
+  const quaternion = new Quaternion();
+  const portalAxis = new Vector3(0, 0, 1);
+  for (let i = 0; i < layout.supports.length; i++) {
+    const support = layout.supports[i];
+    quaternion.setFromUnitVectors(portalAxis, vector(support.t).normalize());
+    timbers.setMatrixAt(
+      i,
+      matrix.compose(vector(support.p), quaternion, new Vector3(1, 1, 1)),
+    );
+  }
+  timbers.count = layout.supports.length;
+  timbers.instanceMatrix.needsUpdate = true;
+  group.add(timbers);
+
+  for (let i = 0; i < layout.lamps.length; i++) {
+    const lamp = layout.lamps[i];
+    const bulb = new Mesh(
+      new SphereGeometry(0.18, 8, 6),
+      new MeshBasicMaterial({ color: lamp.color }),
+    );
+    bulb.name = `mine-lamp-${i + 1}`;
+    bulb.position.copy(vector(lamp.position));
+    group.add(bulb);
+
+    const light = new PointLight(lamp.color, lamp.intensity, lamp.distance, 2);
+    light.position.copy(bulb.position);
+    group.add(light);
+  }
+
+  return group;
+}
+
 /**
  * Builds everything that is not the track, the marbles or the lights.
  *
@@ -360,6 +489,9 @@ export function buildWorld(palette: Palette, track: Track, seed: string): WorldP
   };
 
   if (palette.ground !== null) {
+    // Select the authored interval before ordinary props. The resulting larger
+    // exclusion corridor is then part of every dune placement decision.
+    const mine = palette.name === 'desierto' ? buildDesertMineTunnelLayout(track, seed) : null;
     const segments = 64;
     const size = reach * 4;
     const groundGeo = new PlaneGeometry(size, size, segments, segments);
@@ -385,10 +517,14 @@ export function buildWorld(palette: Palette, track: Track, seed: string): WorldP
     ground.position.set(centre.x, centre.y, centre.z);
     group.add(ground);
 
+    if (mine) group.add(buildDesertMineTunnel(mine));
+
     // ---- scenery
     const propGeo = propGeometry(palette);
     if (propGeo && palette.propCount > 0) {
-      const placements = buildPropLayout(palette, track, seed, groundHeightAt);
+      const placements = buildPropLayout(palette, track, seed, groundHeightAt, {
+        exclusions: mine ? [mine.propExclusion] : [],
+      });
       const mesh = new InstancedMesh(
         propGeo,
         new MeshStandardMaterial({ color: palette.propColor, roughness: 0.9, metalness: 0 }),

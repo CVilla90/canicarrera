@@ -142,6 +142,8 @@ export const COSMETIC = {
   music: 'cosmetic:music',
   /** Which characters stand where along the run, and how they idle. */
   characters: 'cosmetic:characters',
+  /** Authored world set pieces: tunnels, caves, ruins and their dressing. */
+  setPieces: 'cosmetic:set-pieces',
 } as const;
 
 const SEED_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'; // Crockford-ish: no I, L, O, U

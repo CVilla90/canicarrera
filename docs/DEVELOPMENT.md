@@ -93,10 +93,23 @@ When adding an ordinary prop kind, update its geometry footprint in
 `WorldLayout.ts` in the same change. A renderer-only mesh with no layout bound
 has no clearance guarantee.
 
-Intentional crossings are different: represent mines, caves, ruins, mountains,
-and planets as explicit set-piece intervals with known entrances, exits,
-interior radius, prop-exclusion zone, lighting, and camera envelope. Never make
-an ordinary prop intersect and call the overlap a tunnel after the fact.
+Intentional crossings are different. `client/scene/SetPieceLayout.ts` is the
+renderer-free contract and its desert mine is the reference implementation:
+
+1. Search only declared straight segments, then validate actual sampled tangent,
+   slope, grid/finish distance, and non-local track clearance.
+2. Define entrance, exit, axis, interior/outer radii, camera envelope, supports,
+   lighting, and prop exclusion as serialisable data before drawing anything.
+3. Pass the exclusion into `buildPropLayout()` before ordinary props are placed.
+4. Keep every support, lamp, icicle, beam, and other interior object outside the
+   camera envelope too. Wall clearance alone does not prove an unobstructed shot.
+5. Build preview and export from the same static group and animate any future
+   moving part from `sim.time`.
+
+The selector must return `null` rather than force a mine onto an unsafe future
+track grammar. Never make an ordinary prop intersect and call the overlap a
+tunnel after the fact. A new cave, ruin, mountain, or planet should reuse this
+contract and extend its pure tests before it adds renderer dressing.
 
 ## Verification
 

@@ -31,7 +31,10 @@ export const TRACK_PLAN_SAFETY_MARGIN = 0.15;
  */
 export const ORDINARY_PROP_TRACK_CLEARANCE = 7.5;
 
-const MAX_ATTEMPTS_PER_PROP = 64;
+// Authored set-piece reservations remove more candidate area than the ordinary
+// track corridor. Keep enough deterministic redraws to preserve each biome's
+// visual density even when a mine and its portal approaches occupy a long run.
+const MAX_ATTEMPTS_PER_PROP = 96;
 
 export interface PlanPoint {
   x: number;
@@ -52,6 +55,17 @@ export interface PropPlacement {
   angle: number;
   /** Conservative X/Z footprint used by the clearance query. */
   radius: number;
+}
+
+/** A plan-view envelope reserved by an intentional set piece. */
+export interface PropExclusionZone {
+  points: readonly PlanPoint[];
+  radius: number;
+}
+
+export interface PropLayoutOptions {
+  /** Checked before placement so ordinary scenery cannot invade authored geometry. */
+  exclusions?: readonly PropExclusionZone[];
 }
 
 export type GroundHeightAt = (x: number, z: number) => number;
@@ -105,6 +119,20 @@ export function clearsTrackPlan(
   return (
     distanceToTrackPlan(x, z, points) >=
     corridor + Math.max(0, propRadius) + TRACK_PLAN_SAFETY_MARGIN
+  );
+}
+
+/** True when a prop's complete footprint clears every authored exclusion zone. */
+export function clearsPropExclusions(
+  x: number,
+  z: number,
+  propRadius: number,
+  exclusions: readonly PropExclusionZone[],
+): boolean {
+  return exclusions.every(
+    (zone) =>
+      distanceToTrackPlan(x, z, zone.points) >=
+      Math.max(0, zone.radius) + Math.max(0, propRadius) + TRACK_PLAN_SAFETY_MARGIN,
   );
 }
 
@@ -202,6 +230,7 @@ export function buildPropLayout(
   track: Track,
   seed: string,
   groundHeightAt: GroundHeightAt,
+  options: PropLayoutOptions = {},
 ): PropPlacement[] {
   if (palette.kind !== 'surface' || palette.props === 'none' || palette.propCount <= 0) return [];
 
@@ -236,6 +265,7 @@ export function buildPropLayout(
     const z = frame.p.z + Math.sin(angle) * distance;
 
     if (!clearsTrackPlan(x, z, shape.radius, points)) continue;
+    if (!clearsPropExclusions(x, z, shape.radius, options.exclusions ?? [])) continue;
 
     const candidate: PropPlacement = {
       x,

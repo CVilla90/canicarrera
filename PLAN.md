@@ -1,12 +1,14 @@
 # Canicarrera — Production Plan
 
-> **Status (2026-07-27): Stage 0 is built and working locally — read
+> **Status (2026-08-27): Stage 0 is built and working locally — read
 > [`HANDOFF.md`](HANDOFF.md) first.** The proof of concept described below now
 > lives in `legacy/`. Everything in §2 (client-side render + WebCodecs export),
 > §2.1 (pre-sim curation), §3 (determinism) and §4.3 W1–W9 + W11 is implemented
-> and tested; **W10 — deploy and smoke-test on a phone/Safari — is not done**,
-> and B1 still wants a foreground measurement. This document stays as the
-> strategy; it has not been rewritten to past tense.
+> and tested. Audio, biome geometry, characters, mobile HUD improvements, and a
+> desert mine set-piece vertical slice also exist on the active feature branch.
+> **W10 — deploy and smoke-test on a phone/Safari — is not done**, and B1 still
+> wants a foreground measurement. This document stays as the strategy; it has
+> not been rewritten wholesale to past tense.
 
 *Canica* + *carrera*. Today it is a single-page proof of concept: eight marbles
 tumble down a procedurally generated glass chute, the winner is genuinely random
@@ -656,10 +658,11 @@ the pre-sim metrics from §2.1 are the **inputs**, the user's reaction is the
 
 #### 3.1 Worlds: biome ≠ palette
 
-Today `palette` changes colours only — sky, glass, rings, lighting. Jungle,
-desert, and the current outer-space tube are **biomes**: geometry, props, skybox,
-fog and lighting together. That deserves its own field in the spec rather than
-being crammed into `palette` (palette then becomes one property *of* a biome).
+The current `Palette` definition now drives two complete renderer families:
+six orbit worlds and three surface biomes with terrain, props, weather, cast,
+lighting, and open channels. Longer term, biome still deserves its own spec axis
+rather than remaining bundled into `palette` (palette then becomes one property
+*of* a biome).
 
 The cost profile is different from everything else in this plan: biomes cost
 **bundle size and GPU time**, not server money. So: lazy-load props and textures
@@ -669,6 +672,20 @@ per biome, never in the initial bundle.
 real loaded scene**, so a heavy jungle biome automatically produces a lower
 measured throughput and an honest, longer export ETA. No change needed — this is
 the payoff for not benchmarking a synthetic triangle.
+
+##### Intentional set pieces
+
+The first vertical slice is implemented for `desierto`: a deterministic mine
+selected only from a sampled straight interval, with explicit portals, inner
+and outer radii, chase-camera envelope, non-local track clearance, prop
+reservation, supports, and lights. The contract lives in renderer-free
+`client/scene/SetPieceLayout.ts`; Three.js only dresses the validated data.
+
+The reusable rule is now concrete: select and reserve before ordinary scenery,
+return no set piece when a grammar has no honest interval, and bound every
+interior object as well as the enclosing wall. Generalise that contract to ice
+caves and jungle ruins only after a real foreground preview and encoded desert
+MP4 pass.
 
 #### 3.2 Track families: ovals and F1 layouts
 

@@ -49,9 +49,18 @@ import {
   ORDINARY_PROP_TRACK_CLEARANCE,
   TRACK_PLAN_SAFETY_MARGIN,
   buildPropLayout,
+  clearsPropExclusions,
   distanceToTrackPlan,
   sampleTrackPlan,
 } from '../client/scene/WorldLayout.ts';
+import {
+  MINE_FINISH_BUFFER,
+  MINE_GRID_BUFFER,
+  MINE_MAX_SLOPE,
+  MINE_MAX_TANGENT_ANGLE,
+  MINE_TUNNEL_MIN_LENGTH,
+  buildDesertMineTunnelLayout,
+} from '../client/scene/SetPieceLayout.ts';
 
 let failures = 0;
 let checks = 0;
@@ -265,6 +274,117 @@ section('World layout clearance');
   console.log(
     `       ${placed} props across ${worlds.length * 12} layouts · ` +
       `${smallestMargin.toFixed(2)} m tightest extra margin`,
+  );
+}
+
+// ---------------------------------------------------------- desert mine tunnel
+//
+// An intentional crossing has the inverse contract from ordinary scenery: it
+// may surround the track only after proving that the chute and chase camera fit
+// inside it, no other course section enters its shell, and dunes were moved out
+// before rendering. Exercise every grammar because a set piece that only works
+// on one track family is not a world feature.
+section('Desert mine tunnel');
+{
+  let selected = 0;
+  let deterministic = true;
+  let validInterval = true;
+  let validEnvelope = true;
+  let validDressing = true;
+  let propViolations = 0;
+  let wantedProps = 0;
+  let placedProps = 0;
+  let sparsestPropRatio = 1;
+  let smallestPropMargin = Infinity;
+  const fingerprints = new Set<string>();
+
+  for (const archetype of ARCHETYPE_NAMES) {
+    for (let i = 0; i < 12; i++) {
+      const seed = `MINE_${archetype}_${i}`;
+      const spec = generateSpec(seed, { archetype, palette: 'desierto' });
+      const track = buildTrack(spec.track);
+      const first = buildDesertMineTunnelLayout(track, seed);
+      const second = buildDesertMineTunnelLayout(track, seed);
+      if (JSON.stringify(first) !== JSON.stringify(second)) deterministic = false;
+      if (!first) continue;
+
+      selected++;
+      fingerprints.add(JSON.stringify(first));
+      validInterval &&=
+        first.startS >= MINE_GRID_BUFFER - 1e-9 &&
+        first.endS <= track.finishS - MINE_FINISH_BUFFER + 1e-9 &&
+        first.length >= MINE_TUNNEL_MIN_LENGTH - 1e-9 &&
+        first.metrics.minTangentDot >= Math.cos(MINE_MAX_TANGENT_ANGLE) - 1e-9 &&
+        first.metrics.maxSlope <= MINE_MAX_SLOPE + 1e-9;
+      validEnvelope &&=
+        first.metrics.maxTrackAxisOffset + track.tubeRadius < first.interiorRadius &&
+        first.metrics.maxCameraAxisOffset <= first.cameraEnvelopeRadius + 1e-9 &&
+        first.cameraEnvelopeRadius < first.interiorRadius &&
+        first.metrics.nearestOtherTrack >= first.outerRadius + track.tubeRadius;
+      validDressing &&=
+        first.supports.length >= 3 &&
+        first.supports.every((support) => support.s > first.startS && support.s < first.endS) &&
+        first.lamps.length >= 2 &&
+        first.propExclusion.points.length >= 3;
+
+      const desert = PALETTES.desierto;
+      const props = buildPropLayout(
+        desert,
+        track,
+        seed,
+        (x, z) => -11 + Math.sin(x * 0.03) * 2 + Math.cos(z * 0.025) * 1.5,
+        { exclusions: [first.propExclusion] },
+      );
+      wantedProps += desert.propCount;
+      placedProps += props.length;
+      sparsestPropRatio = Math.min(sparsestPropRatio, props.length / desert.propCount);
+      for (const prop of props) {
+        const margin =
+          distanceToTrackPlan(prop.x, prop.z, first.propExclusion.points) -
+          (first.propExclusion.radius + prop.radius);
+        smallestPropMargin = Math.min(smallestPropMargin, margin);
+        if (!clearsPropExclusions(prop.x, prop.z, prop.radius, [first.propExclusion])) {
+          propViolations++;
+        }
+      }
+    }
+  }
+
+  const sampleCount = ARCHETYPE_NAMES.length * 12;
+  check(
+    `every generated desert course selects a safe mine interval (${sampleCount} tracks)`,
+    selected === sampleCount,
+    `${selected}/${sampleCount} selected`,
+  );
+  check('same race -> byte-identical mine contract', deterministic);
+  check(
+    'different races produce different mine contracts',
+    fingerprints.size === sampleCount,
+    `${fingerprints.size} distinct layouts`,
+  );
+  check('mine intervals are straight and clear of grid/finish', validInterval);
+  check('chute, chase camera and non-local track clear the authored shell', validEnvelope);
+  check('every mine has portals-ready frames, supports, lamps and prop exclusion', validDressing);
+  check(
+    'reserved mine corridors retain the desert scenery density',
+    placedProps >= wantedProps * 0.99 && sparsestPropRatio >= 0.9,
+    `${placedProps}/${wantedProps} placed, ${(sparsestPropRatio * 100).toFixed(1)}% sparsest`,
+  );
+  check(
+    'no ordinary dune enters a mine or portal approach',
+    propViolations === 0 && smallestPropMargin >= TRACK_PLAN_SAFETY_MARGIN - 1e-9,
+    `${propViolations} violations, ${smallestPropMargin.toFixed(3)} m margin`,
+  );
+
+  const outcomeSeed = 'MINE_OUTCOME';
+  const outcomeBefore = fingerprint(outcomeSeed);
+  const outcomeSpec = generateSpec(outcomeSeed, { palette: 'desierto' });
+  buildDesertMineTunnelLayout(buildTrack(outcomeSpec.track), outcomeSeed);
+  check('mine selection cannot change the race outcome', fingerprint(outcomeSeed) === outcomeBefore);
+  console.log(
+    `       ${selected} tunnels · ${placedProps} dunes · ` +
+      `${(sparsestPropRatio * 100).toFixed(1)}% sparsest layout · ` +
+      `${smallestPropMargin.toFixed(2)} m tightest exclusion margin`,
   );
 }
 

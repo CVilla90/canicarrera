@@ -3,15 +3,14 @@
 **Read this first.** `PLAN.md` is the strategy and still accurate; this file is
 where the code actually is.
 
-> **Latest checkpoint: 2026-08-26.** Compact mobile timing, percentage removal,
-> immersive/native fullscreen, remembered six-second auto-next, and the
-> deterministic ordinary-scenery clearance foundation are built and pass
-> typecheck, **75/75 tests**, and the production build. The layout test covers
-> 4,320 props across every surface world with zero corridor violations. Manual
-> browser/device and visual QA remain. The exact files, interaction contracts,
-> cosmetic compatibility note, dirty-worktree warning, and next restart point
-> are in `docs/CURRENT_WORK.md`. Durable contributor guidance is in `AGENTS.md`
-> and `docs/DEVELOPMENT.md`; both are intentionally vendor-neutral.
+> **Latest checkpoint: 2026-08-27.** The first intentional set piece — a seeded
+> desert mine with explicit portals, chute/camera envelope, non-local track
+> clearance, reserved dunes, wall-hugging ribs, and warm interior lights — is
+> built on `feature/desert-mine-tunnel`. Typecheck, **84/84 tests**, and the
+> production build pass. Headless production frames verified the approach,
+> interior, and exit after catching and fixing an occluding support design.
+> Interactive browser, device, and encoded-MP4 QA remain. Exact metrics, files,
+> risks, and the restart point are in `docs/CURRENT_WORK.md`.
 
 *Earlier baseline (2026-08-02): Stage 0 was built and pre-flight-checked; that
 session added **audio**, **characters**, and the **mobile/iPhone** fixes, and
@@ -20,11 +19,11 @@ solved the surface-world grading bug that had been open since 2026-08-01.
 
 ## Version control
 
-`github.com/CVilla90/canicarrera`, public, branch `main`. Initial commit
-`d36c63a` covers all of Stage 0.
+`github.com/CVilla90/canicarrera`, public. `main` contains the older published
+baseline; active work is on `feature/desert-mine-tunnel`. Commit `b4a31e8`
+preserves the complete pre-tunnel checkpoint before the mine implementation.
 
-⚠️ **`gh` on this laptop is authed as the work account `carlosvilla-creai`** —
-never use it to write here. Push over the ssh alias:
+⚠️ The stored `gh` tokens on this laptop are stale. Push over the personal SSH alias:
 `git@github-personal:CVilla90/canicarrera.git` (already set as `origin`). The
 repo-local identity is the CVilla90 noreply address; global git stays the work
 email, so **never commit here with `--global` identity assumptions**.
@@ -43,14 +42,14 @@ export an MP4.
 | Curation | mean score **0.796** curated vs **0.506** uncurated, 20 candidates |
 | Curation cost | **~150 ms** worst case for 20 candidates (this laptop) |
 | Race durations | mean **55.5 s**, no DNFs across 120 seeds |
-| Track generator | 0 self-intersections in 150 seeds; all 5 archetypes, all 6 palettes appear |
+| Track generator | 0 self-intersections in 150 seeds; all 5 archetypes and all 9 worlds appear |
 | Export correctness | 720p30, 2048 frames, **68.27 s** of video — exactly `endTime + 4.5 s` |
 | Export container | `ftyp isom`, `moov` **before** `mdat` (fast start), 39.6 MB ≈ 4.9 Mbps vs 5 Mbps target |
 | Export speed | **460 frames/s** at 720p30 — a 68 s video exported in **5 s** |
 | Soundtrack | drop lands exactly on lights-out; **0** clipped samples; the MP4's audio decodes to **79.94 s** against **79.93 s** of video |
 | Surface worlds | the pale-wash bug is **fixed** — same pixel 192,187,137 → 46,96,24 |
 
-`npm test` is currently **75 checks** and takes a few seconds. Run it after touching
+`npm test` is currently **84 checks** and takes a few seconds. Run it after touching
 anything in `shared/`, `client/render/` or `client/audio/`.
 
 ⚠️ **The 460 fps figure was measured in a Chrome tab that was *hidden*** (the
@@ -180,6 +179,31 @@ Nine worlds now, in two families. `shared/palette.ts` is the whole definition;
   regardless of list length and palette only feeds marble saturation/lightness,
   so every seed keeps its archetype, track, physics and winner — only the world
   changes. `?r=<id>` links replay byte-identically.
+
+### Desert mine set piece (added 2026-08-27)
+
+`client/scene/SetPieceLayout.ts` is a pure, serialisable contract between a
+generated track and intentional geometry. The desert renderer consumes it in
+`World.ts`; the simulator never sees it.
+
+- It prefers a 30 m declared straight and falls back no shorter than 14 m.
+- Candidate samples must keep within 9° of the tunnel axis, fit the chute inside
+  a 6.4 m interior, fit the chase camera inside a 5.5 m envelope, and keep every
+  non-local track section outside the 8.25 m rock shell.
+- The mine reserves its interval and both approaches before dunes are placed.
+  Each dune's own footprint is included in that exclusion.
+- The renderer uses open faceted cylinders rather than CSG: outer shell, inner
+  lining, two portal rims, instanced wall ribs, and seeded point lights.
+- 60 tracks (12 per grammar) all select a valid, byte-identical-per-seed mine.
+  The suite found zero chute/camera/track/prop violations and retained 5,379 of
+  5,400 dunes overall; the sparsest compact helix retained 91.1%.
+- Headless production frames for `MINEVIEW16` caught square roof beams crossing
+  the camera view. Replacing them with wall-hugging ribs fixed the approach and
+  interior composition. This is why interior objects need bounds too — proving
+  the wall clears the camera is necessary but not sufficient.
+
+No physics or race-spec field changed. `SIM_VERSION` and `GENERATOR_VERSION`
+remain unchanged.
 
 ### ✅ SOLVED 2026-08-02: surface world colour grading
 
