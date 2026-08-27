@@ -7,10 +7,11 @@ where the code actually is.
 > desert mine with explicit portals, chute/camera envelope, non-local track
 > clearance, reserved dunes, wall-hugging ribs, and warm interior lights — is
 > built on `feature/desert-mine-tunnel`. Typecheck, **84/84 tests**, and the
-> production build pass. Headless production frames verified the approach,
-> interior, and exit after catching and fixing an occluding support design.
-> Interactive browser, device, and encoded-MP4 QA remain. Exact metrics, files,
-> risks, and the restart point are in `docs/CURRENT_WORK.md`.
+> production build pass. A full foreground race and an actual 720p30 H.264/AAC
+> export verified the approach, interior, exit, A/V alignment, and decoder path
+> after headless frames caught and fixed an occluding support design. Device QA
+> remains. Exact metrics, files, risks, and the restart point are in
+> `docs/CURRENT_WORK.md`.
 
 *Earlier baseline (2026-08-02): Stage 0 was built and pre-flight-checked; that
 session added **audio**, **characters**, and the **mobile/iPhone** fixes, and
@@ -52,10 +53,10 @@ export an MP4.
 `npm test` is currently **84 checks** and takes a few seconds. Run it after touching
 anything in `shared/`, `client/render/` or `client/audio/`.
 
-⚠️ **The 460 fps figure was measured in a Chrome tab that was *hidden*** (the
-automation harness never foregrounds it). Real foreground throughput on the
-3070Ti should be at least that. Task **B1 still wants a real foreground
-measurement**, and a SwiftShader run for the Stage 1 estimates.
+The newer foreground Edge probe measured **789.5 raster fps** and **83.9 pipeline
+fps** on the real loaded scene. A 70 s 720p30 export with audio completed in
+about **14 s** and decoded cleanly. Task **B1 remains partial** because its
+1080p30/60, mid-laptop, and SwiftShader measurements are still outstanding.
 
 ## Run it
 
@@ -74,7 +75,7 @@ when something in the frame loop misbehaves.
 
 | Task | State |
 |---|---|
-| B1 benchmark | ⚠️ partial — export measured, but from a hidden tab; no SwiftShader number yet |
+| B1 benchmark | ⚠️ partial — real foreground 720p measured; 1080p30/60, mid-laptop, and SwiftShader remain |
 | W1 seeded RNG, split streams | ✅ asserted by tests |
 | W2 modules | ✅ `shared/` · `client/scene` · `client/export` · `client/ui` · `server/` |
 | W3 Vite + TS + npm three | ✅ three 0.185, `outputColorSpace` / ACES tone mapping |
@@ -199,8 +200,10 @@ generated track and intentional geometry. The desert renderer consumes it in
   5,400 dunes overall; the sparsest compact helix retained 91.1%.
 - Headless production frames for `MINEVIEW16` caught square roof beams crossing
   the camera view. Replacing them with wall-hugging ribs fixed the approach and
-  interior composition. This is why interior objects need bounds too — proving
-  the wall clears the camera is necessary but not sufficient.
+  interior composition. A subsequent full foreground run and real 720p30 export
+  with audio verified that fix through the encoded output. This is why interior
+  objects need bounds too — proving the wall clears the camera is necessary but
+  not sufficient.
 
 No physics or race-spec field changed. `SIM_VERSION` and `GENERATOR_VERSION`
 remain unchanged.

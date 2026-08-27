@@ -3,8 +3,8 @@
 **Date:** 2026-08-27
 **Objective:** Preserve the completed mobile/audio/scenery work, then build the
 first intentional set-piece vertical slice: a deterministic desert mine tunnel.
-**Status:** Tunnel implementation and automated/headless desktop verification
-complete. Interactive browser, real-device, and encoded-MP4 QA remain.
+**Status:** Tunnel implementation, real foreground desktop playback, and an
+actual encoded MP4 with audio are verified. Real-device QA remains.
 
 ## Version-control checkpoint
 
@@ -13,6 +13,8 @@ complete. Interactive browser, real-device, and encoded-MP4 QA remain.
 - Commit `b4a31e8` preserves all work that existed at the start of this session:
   audio, characters, rendering/export work, mobile HUD/fullscreen, auto-next,
   and deterministic ordinary-scenery clearance.
+- Commit `b28a5d1` adds the deterministic desert mine implementation and its
+  renderer-free regression coverage.
 - The GitHub CLI has stale tokens for both stored accounts, but this repository
   pushes through `git@github-personal:CVilla90/canicarrera.git`; the successful
   push used Carlos's personal SSH identity and repository.
@@ -93,30 +95,46 @@ Unused instance slots remain hidden by `mesh.count`.
 Expected non-fatal build warnings remain: Tailwind sourcemap quality and the
 large Three.js chunk.
 
-## Visual verification completed
+## Foreground and encoded-video verification completed
 
-A production build was served locally and loaded in headless Edge at 1440x900
-with seed `MINEVIEW16` (`desierto`, `descenso`). A valid cached capability was
-injected only to bypass the headless browser's known encoder benchmark stall.
-Inspection frames at simulation times 25.2 s, 27.3 s, and 29.4 s were rendered
-through `RaceScene.renderFrameAt` with a large deterministic step to settle the
-camera at the approach, interior, and exit. This exercises the same scene and
-offline-render entry point, but it is not a sequentially timed or encoded MP4.
+A production build was served locally and loaded in a visible, focused Edge
+window with seed `MINEVIEW16` (`desierto`, `descenso`). The complete race played
+in real time. Foreground frames at simulation times 25.36 s, 27.48 s, and
+29.44 s confirmed the approach, interior, and exit with the normal smoothed
+camera path. The portal frames the course, wall-hugging ribs leave the sightline
+open, warm lamps reveal the faceted lining, and the daylight exit remains
+readable.
 
-The second capture confirmed that the portal frames the course, the revised
-timber ribs no longer occlude the chase-camera sightline, warm lamps reveal the
-faceted lining, and the daylight exit remains readable. These temporary QA
-screenshots were not added to the repository.
+The fresh foreground capability probe measured **789.5 raster frames/s** and
+**83.9 pipeline frames/s**. A real UI export then produced the exact in-memory
+MP4 Blob in about 14 seconds:
 
-This is honest desktop headless visual evidence, not an interactive-browser,
-phone, Safari, or encoded-video result.
+- 44,039,588 bytes; SHA-256
+  `825D817FE0BEAA348E272F7EB3D429EC20D9D59BD1CA74E07C85EE8D421865B6`;
+- H.264 High, YUV 4:2:0 BT.709, 1280x720 at 30 fps;
+- exactly 2,100 video frames and 70.000 s container duration;
+- AAC-LC, 48 kHz stereo, 69.9947 s, with mean -12.6 dB and max -0.2 dB; and
+- fast-start atom order: `ftyp`, then `moov`, then `mdat`.
+
+FFmpeg decoded both streams completely without errors. Frames extracted from
+the encoded file at the same approach/interior/exit moments match the intended
+composition and correctly omit the live HTML HUD. The 5.3 ms audio/video
+duration difference is negligible, and the video duration matches the fixed
+2,100-frame export contract exactly.
+
+Edge DevTools download interception reported all 44,039,588 bytes received and
+then marked its native download as cancelled. The QA harness retained the exact
+Blob before that browser-automation boundary; that Blob is the file validated
+above. This is evidence for the encoder, muxer, scene, and audio path, but not
+for an uninstrumented OS download save. Temporary QA code and screenshots were
+not added to the repository.
 
 ## Manual verification still required
 
-- Watch a complete desert race in foreground Chrome/Edge and confirm the
-  smoothed camera transition through tunnels of different lengths and slopes.
-- Export at least one MP4 with audio and inspect the approach, interior, exit,
-  A/V alignment, and portal lighting in the encoded file.
+- Repeat an uninstrumented export click and confirm the browser/OS persists the
+  download; DevTools interception cancelled only after receiving the full Blob.
+- Watch foreground tunnels from several different seeds, lengths, and slopes;
+  this pass exercised the deterministic `MINEVIEW16` slice end-to-end.
 - Repeat the 320/390 px, phone landscape, fullscreen/iPhone fallback, auto-next,
   and multi-race WebGL-memory matrix from `docs/DEVELOPMENT.md`.
 - Inspect several desert seeds on real hardware for floating shell/terrain
@@ -136,11 +154,9 @@ phone, Safari, or encoded-video result.
 
 ## Next safe stage
 
-First perform one real foreground preview and one encoded MP4 of `MINEVIEW16` or
-another deterministic desert seed. Fix any transition, exposure, or terrain
-integration issue found there before generalising the contract.
-
-Once that passes, reuse the same data contract for a glacier ice-cave slice:
+The foreground and encoded `MINEVIEW16` gate passed without a transition,
+exposure, terrain-integration, A/V, or decode defect. Reuse the same data
+contract for a glacier ice-cave slice:
 keep the interval/prop/camera tests, replace only the renderer dressing, and add
 any icicle footprint to the explicit interior envelope. Do not add a second
 set-piece kind by bypassing `SetPieceLayout.ts`.

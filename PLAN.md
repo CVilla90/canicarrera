@@ -6,9 +6,10 @@
 > §2.1 (pre-sim curation), §3 (determinism) and §4.3 W1–W9 + W11 is implemented
 > and tested. Audio, biome geometry, characters, mobile HUD improvements, and a
 > desert mine set-piece vertical slice also exist on the active feature branch.
-> **W10 — deploy and smoke-test on a phone/Safari — is not done**, and B1 still
-> wants a foreground measurement. This document stays as the strategy; it has
-> not been rewritten wholesale to past tense.
+> **W10 — deploy and smoke-test on a phone/Safari — is not done.** B1 now has a
+> real foreground 720p measurement, but still needs its 1080p30/60, mid-laptop,
+> and SwiftShader measurements. This document stays as the strategy; it has not
+> been rewritten wholesale to past tense.
 
 *Canica* + *carrera*. Today it is a single-page proof of concept: eight marbles
 tumble down a procedurally generated glass chute, the winner is genuinely random
@@ -683,9 +684,9 @@ reservation, supports, and lights. The contract lives in renderer-free
 
 The reusable rule is now concrete: select and reserve before ordinary scenery,
 return no set piece when a grammar has no honest interval, and bound every
-interior object as well as the enclosing wall. Generalise that contract to ice
-caves and jungle ruins only after a real foreground preview and encoded desert
-MP4 pass.
+interior object as well as the enclosing wall. The real foreground preview and
+encoded desert MP4 gate passed on `MINEVIEW16`; the glacier ice cave is the next
+vertical slice, followed by jungle ruins only after the same QA gate.
 
 #### 3.2 Track families: ovals and F1 layouts
 
