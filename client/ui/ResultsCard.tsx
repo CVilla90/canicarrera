@@ -17,6 +17,9 @@ export function ResultsCard({
   onExport,
   onNewRace,
   onReplay,
+  autoNext,
+  autoNextRemaining,
+  onToggleAutoNext,
   busy,
 }: {
   standings: StandingRow[];
@@ -25,13 +28,16 @@ export function ResultsCard({
   onExport: () => void;
   onNewRace: () => void;
   onReplay: () => void;
+  autoNext: boolean;
+  autoNextRemaining: number | null;
+  onToggleAutoNext: () => void;
   busy: boolean;
 }): React.ReactElement {
   const podium = standings.slice(0, 3);
   const rest = standings.slice(3);
 
   return (
-    <div className="slab animate-rise w-[min(92vw,430px)] px-5 py-5">
+    <div className="scroll-thin slab animate-rise max-h-[calc(100dvh-2rem)] w-[min(92vw,430px)] overflow-y-auto px-4 py-4 sm:px-5 sm:py-5">
       <h2 className="u-label">{t('results.title')}</h2>
 
       <ol className="mt-3 space-y-2">
@@ -83,6 +89,25 @@ export function ResultsCard({
         <Stat label={t('results.margin')} value={`${metrics.finishMargin.toFixed(2)} s`} />
         <Stat label={t('results.changes')} value={String(metrics.leadChanges)} />
       </dl>
+
+      <button
+        type="button"
+        className="mt-4 flex w-full items-center justify-between border-y border-(--color-rule) py-2.5 text-left"
+        onClick={onToggleAutoNext}
+        aria-pressed={autoNext}
+      >
+        <span className="u-label">{t('action.autoNext')}</span>
+        <span
+          className="u-mono text-right text-[12px]"
+          style={{ color: autoNext ? 'var(--leader)' : undefined }}
+        >
+          {autoNextRemaining !== null
+            ? t('action.autoNextIn', { seconds: autoNextRemaining })
+            : autoNext
+              ? t('action.autoNextOn')
+              : t('action.autoNextOff')}
+        </span>
+      </button>
 
       <div className="mt-5 flex flex-wrap gap-2">
         <button type="button" className="btn btn-primary flex-1" onClick={onExport} disabled={busy}>

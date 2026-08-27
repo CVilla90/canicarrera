@@ -17,7 +17,25 @@ import { buildTrack, selfIntersects } from '../shared/track.ts';
 import { PHYSICS } from '../shared/spec.ts';
 // Client-side, but deliberately DOM-free so it can be checked here rather than
 // only in a browser nobody is watching.
+import {
+  BAR,
+  BAR_ZERO,
+  INTRO_BARS,
+  SFX_MAX_SECONDS,
+  SFX_SHAPES,
+  buildScore,
+  sfxSeconds,
+  type SfxKind,
+} from '../shared/audio/score.ts';
 import { PRESETS, presetById, drawCost } from '../client/render/presets.ts';
+// DOM-free on purpose, so the memory budget that keeps a phone alive is checked
+// here rather than only ever on a device we do not own.
+import {
+  affordableSupersample,
+  canAffordPostFX,
+  deviceProfile,
+  postFXBytes,
+} from '../client/render/device.ts';
 import { frameSeconds, exportSeconds } from '../client/render/cost.ts';
 import {
   LADDER,
@@ -27,6 +45,13 @@ import {
   type PlanCapability,
 } from '../client/render/budget.ts';
 import { QUALITIES } from '../client/export/quality.ts';
+import {
+  ORDINARY_PROP_TRACK_CLEARANCE,
+  TRACK_PLAN_SAFETY_MARGIN,
+  buildPropLayout,
+  distanceToTrackPlan,
+  sampleTrackPlan,
+} from '../client/scene/WorldLayout.ts';
 
 let failures = 0;
 let checks = 0;
@@ -167,6 +192,79 @@ section('Track generator');
     PALETTE_NAMES.map((n) => PALETTES[n])
       .filter((p) => p.kind === 'orbit')
       .every((p) => p.starCount > 0 && p.ground === null),
+  );
+}
+
+// ---------------------------------------------------------------- scenery layout
+//
+// Ordinary scenery is allowed to be dramatic, but never allowed to occupy the
+// chute or chase-camera corridor by accident. These checks use the same pure
+// transforms the Three.js world consumes, across every surface biome.
+section('World layout clearance');
+{
+  const worlds = PALETTE_NAMES.map((name) => PALETTES[name]).filter(
+    (palette) => palette.kind === 'surface',
+  );
+  const fingerprints = new Set<string>();
+  let deterministic = true;
+  let wanted = 0;
+  let placed = 0;
+  let violations = 0;
+  let smallestMargin = Infinity;
+
+  for (const world of worlds) {
+    for (let i = 0; i < 12; i++) {
+      const seed = `LAYOUT_${world.name}_${i}`;
+      const spec = generateSpec(seed, { palette: world.name });
+      const track = buildTrack(spec.track);
+      // The renderer supplies its track-following terrain function. A smooth,
+      // non-flat stand-in proves Y placement is deterministic without pulling
+      // Three.js or the terrain mesh into Node.
+      const groundHeightAt = (x: number, z: number): number =>
+        -11 + Math.sin(x * 0.03) * 2 + Math.cos(z * 0.025) * 1.5;
+      const first = buildPropLayout(world, track, seed, groundHeightAt);
+      const second = buildPropLayout(world, track, seed, groundHeightAt);
+      const firstJson = JSON.stringify(first);
+      if (firstJson !== JSON.stringify(second)) deterministic = false;
+      fingerprints.add(firstJson);
+
+      wanted += world.propCount;
+      placed += first.length;
+      const plan = sampleTrackPlan(track);
+      for (const prop of first) {
+        const margin =
+          distanceToTrackPlan(prop.x, prop.z, plan) -
+          (ORDINARY_PROP_TRACK_CLEARANCE + prop.radius);
+        smallestMargin = Math.min(smallestMargin, margin);
+        if (margin < -1e-9) violations++;
+      }
+    }
+  }
+
+  check('same race -> byte-identical scenery layout', deterministic);
+  check(
+    'different races produce different scenery layouts',
+    fingerprints.size === worlds.length * 12,
+    `${fingerprints.size} distinct layouts`,
+  );
+  check(
+    'ordinary props fill every world budget after relocation',
+    placed === wanted,
+    `${placed}/${wanted} placed`,
+  );
+  check(
+    'no ordinary prop enters the complete track/camera corridor',
+    violations === 0,
+    `${violations} violations`,
+  );
+  check(
+    'clearance math preserves the spline-approximation safety margin',
+    smallestMargin >= TRACK_PLAN_SAFETY_MARGIN - 1e-9,
+    `${smallestMargin.toFixed(4)} m smallest margin`,
+  );
+  console.log(
+    `       ${placed} props across ${worlds.length * 12} layouts · ` +
+      `${smallestMargin.toFixed(2)} m tightest extra margin`,
   );
 }
 
@@ -440,6 +538,181 @@ section('Render presets and cost model');
   const reference = planSeconds(fastMachine, { qualityId: '1080p60', presetId: 'ultra' }, 60)!;
   console.log(
     `       1080p60 Ultra on a ${machine.pipelineFps} fps machine = ${reference.toFixed(1)} s for a 60 s race`,
+  );
+}
+
+// ---------------------------------------------------------------- audio
+//
+// The soundtrack is generated, not sampled, which means it is arithmetic — and
+// arithmetic is testable in node. These checks exist because the alternative way
+// to find out that the music drifted is to export a video and listen to it.
+section('Soundtrack');
+{
+  const spec = generateSpec('AUDIO1');
+  const summary = simulate(spec, undefined, { trace: true });
+  const score = buildScore(spec, summary);
+
+  // Same rule as the race itself: a shared link must sound the same for
+  // everyone who opens it.
+  const rebuild = (seed: string) => {
+    const s = generateSpec(seed);
+    return buildScore(s, simulate(s, undefined, { trace: true }));
+  };
+  check('same seed -> byte-identical score', JSON.stringify(rebuild('AUDIO1')) === JSON.stringify(score));
+  check(
+    'different seeds -> different soundtracks',
+    JSON.stringify(rebuild('AUDIO2')) !== JSON.stringify(score),
+  );
+
+  // The soundtrack must be exactly as long as the video it goes under. A score
+  // that overruns is audio muxed past the last frame; one that stops short is a
+  // podium in silence.
+  check(
+    'score duration is exactly the video duration',
+    Math.abs(score.duration - summary.videoDuration) < 1e-9,
+    `${score.duration.toFixed(3)} vs ${summary.videoDuration.toFixed(3)}`,
+  );
+  check('nothing is scheduled past the end', score.music.every((n) => n.t < score.duration));
+  check('nothing is scheduled before the first frame', score.music.every((n) => n.t >= 0));
+
+  // The claim the whole arrangement rests on: the drop lands ON lights-out, not
+  // near it. BAR_ZERO is chosen so two intro bars end exactly there.
+  check(
+    'the bar grid puts the drop exactly on lights-out',
+    Math.abs(BAR_ZERO + INTRO_BARS * BAR - score.dropAt) < 1e-9,
+    `${(BAR_ZERO + INTRO_BARS * BAR).toFixed(6)} vs ${score.dropAt}`,
+  );
+  check(
+    'every note lands on the sixteenth-note grid',
+    score.music.every((n) => {
+      const steps = (n.t - BAR_ZERO) / (BAR / 16);
+      return Math.abs(steps - Math.round(steps)) < 1e-6;
+    }),
+  );
+  // Drums only after the lights go out — an intro with a beat in it is not an
+  // intro.
+  check(
+    'the beat starts at the drop, not before',
+    score.music
+      .filter((n) => n.voice === 'kick' || n.voice === 'snare')
+      .every((n) => n.t >= BAR_ZERO + BAR),
+  );
+
+  // The rail, in so many words: an effect is short, it fades in, and it fades
+  // out. Checked against the table rather than any one effect, so a new one
+  // cannot quietly opt out of the rule.
+  const kinds = Object.keys(SFX_SHAPES) as SfxKind[];
+  check(
+    'every sound effect fades in and fades out',
+    kinds.every((k) => SFX_SHAPES[k].attack > 0 && SFX_SHAPES[k].release > 0),
+    kinds.filter((k) => SFX_SHAPES[k].attack <= 0 || SFX_SHAPES[k].release <= 0).join(', '),
+  );
+  check(
+    `every sound effect is shorter than ${SFX_MAX_SECONDS} s`,
+    kinds.every((k) => sfxSeconds(k) <= SFX_MAX_SECONDS),
+    kinds.map((k) => `${k} ${sfxSeconds(k).toFixed(2)}`).join(' '),
+  );
+  check(
+    'no effect is cut off by the end of the file',
+    score.sfx.every((hit) => hit.t + sfxSeconds(hit.kind) <= score.duration),
+  );
+  check(
+    'effects are ordered in time',
+    score.sfx.every((hit, i) => i === 0 || hit.t >= score.sfx[i - 1].t),
+  );
+  check(
+    'every effect is panned and levelled within range',
+    score.sfx.every((h) => h.pan >= -1 && h.pan <= 1 && h.gain >= 0 && h.gain <= 1),
+  );
+  check('the five start lights each get a beep', score.sfx.filter((h) => h.kind === 'beep').length === 5);
+  check(
+    'the crowd rises from the countdown and falls to silence',
+    score.crowd.length > 4 &&
+      score.crowd[0].level < 0.2 &&
+      score.crowd[score.crowd.length - 1].level === 0 &&
+      score.crowd.every((p, i) => i === 0 || p.t >= score.crowd[i - 1].t),
+  );
+
+  // Contact events are what the impact sounds are written against, and they are
+  // opt-in so that curation — twenty sims per request — does not pay for them.
+  const traced = simulate(generateSpec('AUDIO1'), undefined, { trace: true });
+  const untraced = simulate(generateSpec('AUDIO1'));
+  check('contact events appear only when asked for', untraced.events.every((e) => e.kind !== 'collide'));
+  check('tracing records contacts', traced.events.some((e) => e.kind === 'collide'));
+  check(
+    'the trace cannot change the race',
+    JSON.stringify(traced.finishOrder) === JSON.stringify(untraced.finishOrder),
+  );
+  check('the tension curve is bounded', traced.tension.every((t) => t.level >= 0 && t.level <= 1));
+
+  console.log(
+    `       ${score.music.length} notes, ${score.sfx.length} effects, ` +
+      `${score.crowd.length} crowd points over ${score.duration.toFixed(1)} s at ${score.bpm} BPM`,
+  );
+}
+
+// ---------------------------------------------------------------- the cast
+section('The cast');
+{
+  const worlds = PALETTE_NAMES.map((n) => PALETTES[n]);
+  check(
+    'every world has characters in it',
+    worlds.every((w) => w.characters.length > 0 && w.characterCount > 0),
+    worlds.filter((w) => w.characters.length === 0).map((w) => w.name).join(', '),
+  );
+  // Each character is its own Group and therefore its own handful of draw
+  // calls. This is a budget, not a preference.
+  check('no world puts more than a dozen characters trackside', worlds.every((w) => w.characterCount <= 12));
+  const surfaceCast = new Set(worlds.filter((w) => w.kind === 'surface').flatMap((w) => w.characters));
+  check(
+    'the surface worlds have their own residents, not one shared mascot',
+    surfaceCast.size >= 6,
+    [...surfaceCast].join(', '),
+  );
+}
+
+// ---------------------------------------------------------------- memory
+//
+// A phone that runs out of video memory does not render slowly — the tab
+// reloads, and the user calls that "it restarted". The budget is the only thing
+// between a 1080p Alto export and exactly that, so it is checked here rather
+// than discovered on a tester's iPhone.
+section('Device memory budget');
+{
+  const MB = 1024 * 1024;
+  const ultra1080 = postFXBytes(1920, 1080, 2);
+  // Two 3840x2160 half-float targets are 63 MiB each; the bloom chain adds
+  // another 0.625 of one. The number is asserted rather than described because
+  // the first version of this comment said "66 MB" — which is the cost of ONE
+  // target, not of the pipeline, and the whole budget is downstream of it.
+  check(
+    '1080p at 2x supersampling costs ~166 MiB, not ~66',
+    ultra1080 > 150 * MB && ultra1080 < 180 * MB,
+    `${(ultra1080 / MB).toFixed(1)} MiB`,
+  );
+  check(
+    'a 96 MB phone budget refuses 2x supersampling at 1080p',
+    affordableSupersample(1920, 1080, 2, 96 * MB) === 1,
+  );
+  check('a 512 MB desktop budget allows it', affordableSupersample(1920, 1080, 2, 512 * MB) === 2);
+  // The top rung of the ladder must survive the guard on the machines it was
+  // written for. A budget that silently clamps 4K Ultra everywhere would make
+  // the export panel promise something it never delivers.
+  check(
+    'the desktop budget still allows 4K at 2x supersampling',
+    affordableSupersample(3840, 2160, 2, deviceProfile().postFXBudget) === 2 ||
+      deviceProfile().constrained,
+    `${(postFXBytes(3840, 2160, 2) / MB).toFixed(0)} MiB needed`,
+  );
+  check(
+    'the clamp never drops below 1, however small the budget',
+    affordableSupersample(3840, 2160, 2, 1) === 1,
+  );
+  check('a phone can still run the post pipeline at 1x', canAffordPostFX(1920, 1080, 96 * MB));
+  console.log(
+    `       1080p: 1x ${(postFXBytes(1920, 1080, 1) / MB).toFixed(0)} MB, ` +
+      `2x ${(ultra1080 / MB).toFixed(0)} MB · ` +
+      `4K 2x ${(postFXBytes(3840, 2160, 2) / MB).toFixed(0)} MB`,
   );
 }
 

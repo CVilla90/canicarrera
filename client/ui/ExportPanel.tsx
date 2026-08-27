@@ -35,6 +35,9 @@ export function ExportPanel({
   presetId,
   budgetId,
   auto,
+  audio,
+  audioAvailable,
+  onToggleAudio,
   onSelectQuality,
   onSelectPreset,
   onSelectBudget,
@@ -57,6 +60,11 @@ export function ExportPanel({
   presetId: PresetId;
   budgetId: string;
   auto: boolean;
+  /** Whether the exported file should carry a soundtrack. */
+  audio: boolean;
+  /** False when this browser has no `AudioEncoder` and the file will be silent. */
+  audioAvailable: boolean;
+  onToggleAudio: (value: boolean) => void;
   onSelectQuality: (id: string) => void;
   onSelectPreset: (id: PresetId) => void;
   onSelectBudget: (id: string) => void;
@@ -119,6 +127,28 @@ export function ExportPanel({
               {auto ? t('export.auto') : t('export.manual')} · {preset.blurb[lang]}
             </p>
           </div>
+
+          {/* Sound is a property of the FILE, not of the preview. Someone with
+              the tab muted at a desk still wants a soundtrack on the thing they
+              are about to upload, so this is its own decision — and it is on by
+              default, because a silent race video is a weak upload. */}
+          <label className="mt-3 flex items-center gap-2.5">
+            <input
+              type="checkbox"
+              checked={audio && audioAvailable}
+              disabled={!audioAvailable}
+              onChange={(event) => onToggleAudio(event.target.checked)}
+              className="h-4 w-4 shrink-0 accent-(--leader)"
+            />
+            <span className="text-[12px] leading-snug text-(--color-dim)">
+              {t('export.audio')}
+            </span>
+          </label>
+          {!audioAvailable && (
+            <p className="mt-1 text-[11px] leading-relaxed text-(--color-dim)">
+              {t('export.audioUnsupported')}
+            </p>
+          )}
 
           <button
             type="button"
@@ -241,9 +271,11 @@ export function ExportPanel({
             <span>
               {progress.phase === 'preparing'
                 ? t('export.preparing')
-                : progress.phase === 'finishing'
-                  ? t('export.finishing')
-                  : t('export.frames', { frame: progress.frame, total: progress.totalFrames })}
+                : progress.phase === 'audio'
+                  ? t('export.renderingAudio')
+                  : progress.phase === 'finishing'
+                    ? t('export.finishing')
+                    : t('export.frames', { frame: progress.frame, total: progress.totalFrames })}
             </span>
             <span className="text-(--color-dim)">
               {progress.secondsLeft !== null && progress.phase === 'rendering'
@@ -285,6 +317,10 @@ export function ExportPanel({
               seconds: formatDuration(result.elapsedMs / 1000, lang),
               size: formatBytes(result.blob.size),
             })}
+            {/* Said out loud rather than discovered on playback: asking for
+                sound and silently getting none is the kind of surprise that
+                gets found after the video is already uploaded. */}
+            {audio && !result.hasAudio ? ` · ${t('export.silent')}` : ''}
           </p>
           <div className="mt-4 flex gap-2">
             <button type="button" className="btn flex-1" onClick={onDownloadAgain}>

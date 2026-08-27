@@ -55,9 +55,11 @@ import { COSMETIC, stream } from '@shared/rng.ts';
 import { clamp } from '@shared/vec3.ts';
 import { SharedCurve } from './SharedCurve.ts';
 import { buildWorld, buildChannelGeometry, buildKerbs, updateMotes, type WorldParts } from './World.ts';
+import { buildCharacters, updateCharacters, type CharacterCast } from './Characters.ts';
 import { PostFX } from '../render/PostFX.ts';
 import { buildEnvironment } from '../render/environment.ts';
 import { presetById, DEFAULT_PRESET_ID, needsPostFX, type RenderPreset } from '../render/presets.ts';
+import { affordableSupersample, canAffordPostFX, deviceProfile } from '../render/device.ts';
 
 /** Exposure before any race is loaded; every world then sets its own. */
 const DEFAULT_EXPOSURE = 1.15;
@@ -117,11 +119,25 @@ export class RaceScene {
   onSnapshot: ((snapshot: SceneSnapshot) => void) | null = null;
   private lastSnapshotAt = 0;
 
+  /**
+   * Fired when the GPU takes the drawing context away, and again when it comes
+   * back.
+   *
+   * This is the single most valuable listener in the file. Without it a lost
+   * context is a permanently frozen canvas — the page looks alive, the HUD keeps
+   * updating from the sim, and nothing ever draws again. That is precisely what
+   * "it got stuck" describes, and it is common on iOS Safari, which drops
+   * contexts under memory pressure rather than crashing the tab.
+   */
+  onContextChange: ((state: 'lost' | 'restored') => void) | null = null;
+  private contextLost = false;
+
   private trackGroup: Group | null = null;
   private marbleMeshes: Mesh[] = [];
   private lastSpin: number[] = [];
   private starField: Points | null = null;
   private world: WorldParts | null = null;
+  private cast: CharacterCast | null = null;
   private confetti: { points: Points; vel: Vector3[]; life: number } | null = null;
   private confettiFired = false;
 
@@ -164,7 +180,10 @@ export class RaceScene {
   private outputWidth = 1;
   private outputHeight = 1;
 
+  private readonly canvas: HTMLCanvasElement;
+
   constructor(canvas: HTMLCanvasElement) {
+    this.canvas = canvas;
     this.renderer = new WebGLRenderer({
       canvas,
       antialias: true,
@@ -174,7 +193,10 @@ export class RaceScene {
       preserveDrawingBuffer: true,
       powerPreference: 'high-performance',
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // Capped by the device, not by a constant. A phone reporting ratio 3 would
+    // otherwise render a full-screen canvas at nine times the pixels of 1x —
+    // and, because of `preserveDrawingBuffer` above, hold two of them.
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, deviceProfile().maxPixelRatio));
     this.renderer.outputColorSpace = SRGBColorSpace;
     this.renderer.toneMapping = ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = DEFAULT_EXPOSURE;
@@ -184,8 +206,48 @@ export class RaceScene {
     // "slow" — they are black. Better to know now and never offer them.
     this.postFXAvailable = PostFX.isSupported(this.renderer);
 
+    canvas.addEventListener('webglcontextlost', this.onContextLost);
+    canvas.addEventListener('webglcontextrestored', this.onContextRestored);
+
     this.camera = new PerspectiveCamera(58, 16 / 9, 0.1, 900);
     this.scene.add(this.camera);
+  }
+
+  /**
+   * The browser is taking the context away.
+   *
+   * `preventDefault` is mandatory — without it the context is gone for good and
+   * `webglcontextrestored` never fires, which is the difference between a
+   * two-second interruption and a page the user has to reload by hand.
+   */
+  private readonly onContextLost = (event: Event): void => {
+    event.preventDefault();
+    this.contextLost = true;
+    this.stop();
+    this.onContextChange?.('lost');
+  };
+
+  private readonly onContextRestored = (): void => {
+    this.contextLost = false;
+    // Every GPU-side object died with the context: textures, buffers, programs,
+    // the environment cubemap, the post-processing targets. Rebuilding the race
+    // from its spec is both the simplest and the only correct response — and it
+    // is cheap precisely because a race IS its spec.
+    const spec = this.spec;
+    this.postFX?.dispose();
+    this.postFX = null;
+    if (spec) {
+      try {
+        this.load(spec);
+      } catch {
+        // Nothing more to try. The UI still has its own message up.
+      }
+    }
+    this.onContextChange?.('restored');
+  };
+
+  get isContextLost(): boolean {
+    return this.contextLost;
   }
 
   // -------------------------------------------------------------- quality
@@ -236,7 +298,16 @@ export class RaceScene {
 
   /** Creates, reconfigures or tears down the post pipeline for the current mode. */
   private syncPostFX(): void {
-    const wanted = this.postFXAvailable && needsPostFX(this.preset, this.exporting);
+    // Two independent questions, and until this line only the first was asked.
+    // `postFXAvailable` is about GPU *capability* — can it render into a
+    // half-float target at all. `canAffordPostFX` is about *capacity* — is there
+    // room for the targets at this size. A phone answers yes to the first and,
+    // at export resolutions, no to the second; believing the first alone is how
+    // a tab gets reloaded mid-export.
+    const wanted =
+      this.postFXAvailable &&
+      needsPostFX(this.preset, this.exporting) &&
+      canAffordPostFX(this.outputWidth, this.outputHeight);
     if (!wanted) {
       this.postFX?.dispose();
       this.postFX = null;
@@ -248,6 +319,13 @@ export class RaceScene {
     // Supersampling is an export-only luxury: in realtime the browser is already
     // applying devicePixelRatio and doubling on top of that would drop a phone
     // to single-digit frame rates for a preview nobody keeps.
+    //
+    // And even offline it is capped by what fits. Dropping 2x to 1x costs a
+    // little edge softness; allocating a 3840x2160 half-float pair on a phone
+    // costs the whole tab.
+    const supersample = this.exporting
+      ? affordableSupersample(this.outputWidth, this.outputHeight, this.preset.supersample)
+      : 1;
     this.postFX.configure({
       bloom: this.preset.bloom,
       bloomStrength: 0.55,
@@ -255,7 +333,7 @@ export class RaceScene {
       // is active, so this MUST track `renderer.toneMappingExposure` or the
       // same world grades differently with bloom on and off.
       exposure: this.renderer.toneMappingExposure,
-      supersample: this.exporting ? this.preset.supersample : 1,
+      supersample,
     });
     this.postFX.setSize(this.outputWidth, this.outputHeight);
   }
@@ -337,8 +415,12 @@ export class RaceScene {
     // Before the meshes: the environment map is what their materials sample,
     // and building it first means no frame is ever drawn with it missing.
     this.syncEnvironment();
-    this.world = buildWorld(palette, this.track);
+    this.world = buildWorld(palette, this.track, spec.seed);
     this.scene.add(this.world.group);
+    // Keyed on the race seed, so the same link puts the same penguin on the
+    // same rock — and on a cosmetic stream, so adding one cannot move a marble.
+    this.cast = buildCharacters(palette, this.track, spec.seed);
+    this.scene.add(this.cast.group);
     this.buildStars();
     this.buildTrackMesh();
     this.buildMarbles();
@@ -375,7 +457,7 @@ export class RaceScene {
   };
 
   start(): void {
-    if (this.running) return;
+    if (this.running || this.contextLost) return;
     this.running = true;
     document.addEventListener('visibilitychange', this.onVisibility);
     this.lastFrameTime = performance.now();
@@ -420,6 +502,10 @@ export class RaceScene {
   }
 
   draw(): void {
+    // Drawing into a lost context is not an error, it is a no-op that logs a
+    // warning per frame. Skipping it keeps the console readable while we wait
+    // for the browser to hand the context back.
+    if (this.contextLost) return;
     if (this.postFX) {
       this.postFX.renderSubFrame(this.scene, this.camera, 1);
       this.postFX.resolve();
@@ -735,6 +821,12 @@ export class RaceScene {
     // at the start line.
     if (this.world?.motes) updateMotes(this.world.motes, dt, this.camera.position);
 
+    // Driven by SIM TIME and the leader's position, never by a wall clock. That
+    // is what makes the cast identical in the preview and in the exported file:
+    // a frame drawn in 3 ms and the same frame drawn in 300 ms are handed the
+    // same `sim.time`, so the penguin is mid-flap at exactly the same instant.
+    if (this.cast) updateCharacters(this.cast, sim.time, sim.leader().s);
+
     if (!this.confettiFired && sim.finishOrder.length > 0) {
       this.confettiFired = true;
       this.spawnConfetti();
@@ -986,6 +1078,14 @@ export class RaceScene {
       (this.starField.material as PointsMaterial).dispose();
       this.starField = null;
     }
+    if (this.cast) {
+      this.scene.remove(this.cast.group);
+      // The cast shares one geometry and one material per species across every
+      // instance, so it disposes itself rather than being traversed — a
+      // traversal would dispose the same sphere eight times.
+      this.cast.dispose();
+      this.cast = null;
+    }
     if (this.world) {
       this.scene.remove(this.world.group);
       this.world.group.traverse((object) => {
@@ -1008,6 +1108,8 @@ export class RaceScene {
 
   dispose(): void {
     this.stop();
+    this.canvas.removeEventListener('webglcontextlost', this.onContextLost);
+    this.canvas.removeEventListener('webglcontextrestored', this.onContextRestored);
     this.disposeRace();
     this.postFX?.dispose();
     this.postFX = null;

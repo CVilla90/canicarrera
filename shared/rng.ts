@@ -138,6 +138,10 @@ export const COSMETIC = {
   motes: 'cosmetic:motes',
   /** Trackside billboards — placement only; the text is not random. */
   billboards: 'cosmetic:billboards',
+  /** Key, phrase offsets and drum fills. Never anything the sim reads. */
+  music: 'cosmetic:music',
+  /** Which characters stand where along the run, and how they idle. */
+  characters: 'cosmetic:characters',
 } as const;
 
 const SEED_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'; // Crockford-ish: no I, L, O, U

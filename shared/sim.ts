@@ -41,14 +41,68 @@ export interface MarbleState {
   place: number;
   /** Total rolled angle, radians — the renderer spins the mesh by this. */
   spin: number;
+  /**
+   * Sim time before which this marble will not report another collision.
+   *
+   * Bookkeeping for the event stream only. Nothing in the integrator reads it,
+   * so it cannot move a marble by a millimetre — see `collide()`.
+   */
+  nextCollideAt: number;
   rng: Rng;
 }
 
 export interface SimEvent {
   t: number;
-  kind: 'go' | 'finish' | 'overtake' | 'end';
+  kind: 'go' | 'finish' | 'overtake' | 'end' | 'collide';
   marbleId?: number;
   place?: number;
+  /**
+   * 0-1, `collide` only. Impact speed relative to a hard hit, so the sound
+   * designer gets a nudge from a graze and a crack from a rear-ending.
+   */
+  intensity?: number;
+}
+
+/**
+ * Below this closing speed a contact is a rub, not a hit, and reporting it
+ * would fill the event list with noise nobody can hear.
+ */
+const COLLIDE_MIN_SPEED = 0.45;
+/** Closing speed treated as a maximum-intensity hit. */
+const COLLIDE_LOUD_SPEED = 4.5;
+/** A marble reports at most one collision per this many seconds. */
+const COLLIDE_COOLDOWN = 0.13;
+/**
+ * Hard ceiling on the event list.
+ *
+ * The list is retained for the whole race and read by the audio score. A
+ * runaway pile-up must not be able to allocate without bound on a phone.
+ */
+const MAX_EVENTS = 3000;
+
+/** How close the front two are before it counts as a fight, metres. */
+const TENSION_GAP = 6;
+/** Lead-to-last gap at which the field is considered strung out, metres. */
+const PACK_GAP = 40;
+
+/** One sample of "how exciting is this right now", 0-1, at 5 Hz. */
+export interface TensionSample {
+  /** Sim time, including the countdown. */
+  t: number;
+  level: number;
+}
+
+export interface SimOptions {
+  /**
+   * Collect the detailed trace: contact events and the tension curve.
+   *
+   * **Off by default, and deliberately so.** Curation simulates twenty races
+   * per request on a 1 vCPU box and throws nineteen of them away; it has no use
+   * for a few thousand contact events per candidate. Everything the trace
+   * records is write-only — no part of the integrator reads it back — so
+   * turning it on cannot change a single finish time.
+   */
+  trace?: boolean;
 }
 
 export class RaceSim {
@@ -57,6 +111,8 @@ export class RaceSim {
   readonly marbles: MarbleState[];
   readonly finishOrder: MarbleState[] = [];
   readonly events: SimEvent[] = [];
+  /** Empty unless `trace` was requested. */
+  readonly tension: TensionSample[] = [];
 
   /** Total elapsed sim time, including the countdown. `steps * DT` exactly. */
   time = 0;
@@ -65,6 +121,7 @@ export class RaceSim {
   /** Sim time at which the race ended. 0 until it does. */
   endTime = 0;
 
+  private readonly trace: boolean;
   private leaderId = -1;
   private sampleAccumulator = 0;
   private samples = 0;
@@ -73,8 +130,9 @@ export class RaceSim {
   private maxGap = 0;
   private leaderSamples = new Map<number, number>();
 
-  constructor(spec: RaceSpec, track?: Track) {
+  constructor(spec: RaceSpec, track?: Track, options: SimOptions = {}) {
     this.spec = spec;
+    this.trace = options.trace ?? false;
     this.track = track ?? buildTrack(spec.track);
     this.marbles = spec.marbles.map((m) => ({
       id: m.id,
@@ -87,8 +145,20 @@ export class RaceSim {
       finishTime: 0,
       place: 0,
       spin: 0,
+      nextCollideAt: 0,
       rng: stream(spec.simSeed, SIM_STREAMS.wander(m.id)),
     }));
+  }
+
+  /**
+   * Appends an event, up to a hard cap.
+   *
+   * Everything the sim reports goes through here so the cap cannot be
+   * accidentally bypassed by a new event type.
+   */
+  private emit(event: SimEvent): void {
+    if (this.events.length >= MAX_EVENTS) return;
+    this.events.push(event);
   }
 
   /** Race clock in seconds: 0 at lights-out, negative during the countdown. */
@@ -147,7 +217,7 @@ export class RaceSim {
     if (this.phase === 'countdown') {
       if (this.time >= COUNTDOWN) {
         this.phase = 'racing';
-        this.events.push({ t: this.time, kind: 'go' });
+        this.emit({ t: this.time, kind: 'go' });
       }
       return;
     }
@@ -183,7 +253,7 @@ export class RaceSim {
         m.finishTime = this.raceTime;
         m.place = this.finishOrder.length + 1;
         this.finishOrder.push(m);
-        this.events.push({ t: this.time, kind: 'finish', marbleId: m.id, place: m.place });
+        this.emit({ t: this.time, kind: 'finish', marbleId: m.id, place: m.place });
       }
     }
 
@@ -221,6 +291,23 @@ export class RaceSim {
       if (gapSq >= minD * minD) continue;
 
       if (a.v > b.v) {
+        // Reported BEFORE the exchange, while the closing speed still exists.
+        // Everything in this block is write-only bookkeeping — `emit` appends to
+        // a list nobody in the integrator reads, and `nextCollideAt` is only ever
+        // compared against here. That is why adding collision sound to the game
+        // does not bump `SIM_VERSION`: it consumes no RNG and moves no marble.
+        const closing = a.v - b.v;
+        if (this.trace && closing >= COLLIDE_MIN_SPEED && this.time >= a.nextCollideAt) {
+          a.nextCollideAt = this.time + COLLIDE_COOLDOWN;
+          b.nextCollideAt = this.time + COLLIDE_COOLDOWN;
+          this.emit({
+            t: this.time,
+            kind: 'collide',
+            marbleId: a.id,
+            intensity: clamp(closing / COLLIDE_LOUD_SPEED, 0, 1),
+          });
+        }
+
         const e = PHYSICS.restitution;
         const u1 = a.v;
         const u2 = b.v;
@@ -265,10 +352,29 @@ export class RaceSim {
         this.leadChanges++;
         const progress = lead.s / this.track.finishS;
         if (progress > 0.75) this.lateChanges++;
-        this.events.push({ t: this.time, kind: 'overtake', marbleId: lead.id });
+        this.emit({ t: this.time, kind: 'overtake', marbleId: lead.id });
       }
       this.leaderId = lead.id;
     }
+
+    if (this.trace) this.tension.push({ t: this.time, level: this.tensionAt(lead, second, last) });
+  }
+
+  /**
+   * How exciting this instant is, 0-1.
+   *
+   * Three things, in the order a spectator feels them: the front two being
+   * close, being near the end, and the field still being together. It is
+   * deliberately the same shape as the curation scorer's taste — a race is
+   * exciting for the same reasons whether you are picking it or scoring it —
+   * but sampled over time rather than summarised, because that is what a
+   * crowd, a camera or a soundtrack actually reacts to.
+   */
+  private tensionAt(lead: MarbleState, second: MarbleState, last: MarbleState): number {
+    const tight = clamp(1 - (lead.s - second.s) / TENSION_GAP, 0, 1);
+    const runIn = clamp((lead.s / this.track.finishS - 0.7) / 0.3, 0, 1);
+    const pack = clamp(1 - (lead.s - last.s) / PACK_GAP, 0, 1);
+    return clamp(0.2 + tight * 0.42 + runIn * 0.24 + pack * 0.16, 0, 1);
   }
 
   private end(): void {
@@ -282,7 +388,7 @@ export class RaceSim {
       m.place = this.finishOrder.length + 1;
       this.finishOrder.push(m);
     }
-    this.events.push({ t: this.time, kind: 'end' });
+    this.emit({ t: this.time, kind: 'end' });
   }
 
   metrics(): RaceMetrics {
@@ -311,6 +417,10 @@ export interface SimSummary {
   /** Total video length if this race were exported. */
   videoDuration: number;
   finishOrder: { id: number; name: string; place: number; finishTime: number }[];
+  /** Timestamped race events. Contacts appear only when `trace` was requested. */
+  events: SimEvent[];
+  /** The tension curve. Empty unless `trace` was requested. */
+  tension: TensionSample[];
 }
 
 /**
@@ -318,8 +428,8 @@ export interface SimSummary {
  * 20 times per request, and what the exporter calls once to learn how many
  * frames it is about to draw.
  */
-export function simulate(spec: RaceSpec, track?: Track): SimSummary {
-  const sim = new RaceSim(spec, track);
+export function simulate(spec: RaceSpec, track?: Track, options: SimOptions = {}): SimSummary {
+  const sim = new RaceSim(spec, track, options);
   let guard = Math.ceil((PHYSICS.maxRaceSeconds + COUNTDOWN) / PHYSICS.dt) + 10;
   while (sim.phase !== 'finished' && guard-- > 0) sim.step();
   return {
@@ -332,5 +442,7 @@ export function simulate(spec: RaceSpec, track?: Track): SimSummary {
       place: m.place,
       finishTime: m.finishTime,
     })),
+    events: sim.events,
+    tension: sim.tension,
   };
 }

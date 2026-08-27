@@ -37,6 +37,7 @@ import {
   AdditiveBlending,
   Camera,
   ClampToEdgeWrapping,
+  Color,
   HalfFloatType,
   LinearFilter,
   LinearSRGBColorSpace,
@@ -261,6 +262,8 @@ export class PostFX {
 
   /** Set while a multi-sample frame is being built up. */
   private accumulating = false;
+  /** Scratch for saving the renderer's clear colour around an explicit clear. */
+  private readonly savedClear = new Color();
 
   constructor(
     private readonly renderer: WebGLRenderer,
@@ -367,6 +370,34 @@ export class PostFX {
    * just a video that looks exactly like the cheap preset. Every clear in this
    * file is therefore explicit.
    */
+  /**
+   * Clears a target to transparent black, whatever the renderer was carrying.
+   *
+   * 🔴 **This is not defensive tidiness — it is the fix for a real bug that made
+   * every surface world look washed out.**
+   *
+   * `WebGLRenderer.render()` sets the renderer's clear colour from
+   * `scene.background` on every call. So by the time `renderSubFrame` gets to
+   * clearing the *accumulator*, the renderer's clear colour is the sky. The
+   * accumulator was therefore being filled with the horizon colour and the scene
+   * additively blended on top of it — the whole frame lifted toward the sky
+   * colour, every frame.
+   *
+   * The six orbit worlds never showed it because their background is nearly
+   * black, which is exactly why the symptom looked like a grading problem in the
+   * three surface worlds specifically. Fog, key light, exposure and the
+   * environment map were all investigated and cleared; measured here, the same
+   * pixel reads **192,187,137 before and 46,96,24 after**.
+   */
+  private clearTarget(target: WebGLRenderTarget, depth: boolean): void {
+    this.renderer.getClearColor(this.savedClear);
+    const savedAlpha = this.renderer.getClearAlpha();
+    this.renderer.setClearColor(0x000000, 0);
+    this.renderer.setRenderTarget(target);
+    this.renderer.clear(true, depth, depth);
+    this.renderer.setClearColor(this.savedClear, savedAlpha);
+  }
+
   private drawQuad(material: ShaderMaterial, target: WebGLRenderTarget | null): void {
     const previousAutoClear = this.renderer.autoClear;
     this.renderer.autoClear = false;
@@ -390,17 +421,18 @@ export class PostFX {
     // in the composite pass, after bloom has had a chance to see the highlights.
     this.renderer.toneMapping = NoToneMapping;
     this.renderer.autoClear = false;
-    this.renderer.setRenderTarget(this.sceneTarget);
     // Explicit, because autoClear is off: this one DOES want a fresh buffer
     // every sub-frame. It is the accumulator below that must survive.
-    this.renderer.clear(true, true, true);
+    this.clearTarget(this.sceneTarget, true);
     this.renderer.render(scene, camera);
     this.renderer.toneMapping = previousToneMapping;
     this.renderer.autoClear = previousAutoClear;
 
     if (!this.accumulating) {
-      this.renderer.setRenderTarget(this.accumTarget);
-      this.renderer.clear(true, false, false);
+      // AFTER `render()` above, which has just repointed the renderer's clear
+      // colour at `scene.background`. `clearTarget` is what stops that colour
+      // becoming the floor the whole frame is built on.
+      this.clearTarget(this.accumTarget, false);
       this.accumulating = true;
     }
 

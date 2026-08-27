@@ -13,8 +13,12 @@
  * want to work.
  */
 import { simulate } from '@shared/sim.ts';
+import { buildScore } from '@shared/audio/score.ts';
 import type { RaceSpec } from '@shared/spec.ts';
 import type { RaceScene } from '../scene/RaceScene.ts';
+import { makeYield } from '../lib/yield.ts';
+import { encodeAudioBuffer, pickAudioConfig, renderScore } from '../audio/render.ts';
+import type { Mix } from '../audio/synth.ts';
 import { WebCodecsEncoder } from './encoder.ts';
 import type { Quality } from './quality.ts';
 import type { RenderPreset } from '../render/presets.ts';
@@ -25,7 +29,7 @@ const QUEUE_HIGH_WATER = 10;
 const QUEUE_LOW_WATER = 4;
 
 export interface ExportProgress {
-  phase: 'preparing' | 'rendering' | 'finishing';
+  phase: 'preparing' | 'audio' | 'rendering' | 'finishing';
   frame: number;
   totalFrames: number;
   /** Measured frames per second, so far. */
@@ -42,6 +46,8 @@ export interface ExportResult {
   elapsedMs: number;
   /** Measured frames per second over the whole export. */
   fps: number;
+  /** False when the browser could not encode audio and the file came out silent. */
+  hasAudio: boolean;
 }
 
 export interface ExportOptions {
@@ -50,6 +56,14 @@ export interface ExportOptions {
   quality: Quality;
   /** Visual fidelity. Independent of `quality`, and never an input to the sim. */
   preset: RenderPreset;
+  /**
+   * Mix for the soundtrack, or null for a silent file.
+   *
+   * Deliberately independent of whether the live preview is muted: plenty of
+   * people watch the preview in silence at a desk and still want sound in the
+   * video they are about to upload.
+   */
+  audio: Mix | null;
   onProgress?: (progress: ExportProgress) => void;
   signal?: AbortSignal;
 }
@@ -61,34 +75,12 @@ export class ExportAborted extends Error {
   }
 }
 
-/**
- * Yields to the event loop without the 4 ms clamp `setTimeout(0)` picks up once
- * nested. Also keeps working in a background tab, which `requestAnimationFrame`
- * does not — a throttled export that never finishes reads as a hang.
- */
-function makeYield(): () => Promise<void> {
-  if (typeof MessageChannel === 'undefined') {
-    return () => new Promise<void>((resolve) => setTimeout(resolve, 0));
-  }
-  const channel = new MessageChannel();
-  let resolveNext: (() => void) | null = null;
-  channel.port1.onmessage = () => {
-    const resolve = resolveNext;
-    resolveNext = null;
-    resolve?.();
-  };
-  return () =>
-    new Promise<void>((resolve) => {
-      resolveNext = resolve;
-      channel.port2.postMessage(null);
-    });
-}
-
 export async function exportRace({
   scene,
   spec,
   quality,
   preset,
+  audio,
   onProgress,
   signal,
 }: ExportOptions): Promise<ExportResult> {
@@ -97,8 +89,9 @@ export async function exportRace({
 
   // Ask the simulator how long the race is before drawing anything. It costs a
   // few milliseconds and it is the only way to know the frame count up front,
-  // which is what makes the progress bar honest.
-  const summary = simulate(spec);
+  // which is what makes the progress bar honest. `trace` is on because the
+  // soundtrack is built from the same run — one simulation, two consumers.
+  const summary = simulate(spec, undefined, { trace: audio !== null });
   const totalFrames = Math.max(1, Math.round(summary.videoDuration * quality.fps));
 
   onProgress?.({
@@ -134,7 +127,33 @@ export async function exportRace({
   const started = performance.now();
 
   try {
-    encoder = await WebCodecsEncoder.create(quality);
+    // Sound first, and entirely, before a single frame is drawn.
+    //
+    // Two reasons. The muxer needs the audio track declared before it accepts
+    // any chunk, so whether there IS sound has to be settled up front. And the
+    // offline audio render is a single blocking call — running it between video
+    // frames would stall the encoder queue at an unpredictable moment, which is
+    // exactly the pile-up the backpressure below exists to prevent.
+    const audioConfig = audio ? await pickAudioConfig() : null;
+    encoder = await WebCodecsEncoder.create(quality, audioConfig);
+
+    const audioEncoder = encoder.audioEncoder;
+    if (audio && audioEncoder) {
+      onProgress?.({
+        phase: 'audio',
+        frame: 0,
+        totalFrames,
+        fps: 0,
+        secondsLeft: null,
+        queuePressure: 0,
+      });
+      const score = buildScore(spec, summary);
+      const buffer = await renderScore(score, audio);
+      if (signal?.aborted) throw new ExportAborted();
+      await encodeAudioBuffer(buffer, audioEncoder);
+    }
+    if (signal?.aborted) throw new ExportAborted();
+
     const frameDuration = 1 / quality.fps;
     const keyEvery = Math.max(1, quality.fps * 2);
     let lastReport = 0;
@@ -192,9 +211,16 @@ export async function exportRace({
       queuePressure: 0,
     });
 
+    const hasAudio = encoder.audioEncoder !== null;
     const blob = await encoder.finish();
     const elapsedMs = performance.now() - started;
-    return { blob, frames: totalFrames, elapsedMs, fps: totalFrames / (elapsedMs / 1000) };
+    return {
+      blob,
+      frames: totalFrames,
+      elapsedMs,
+      fps: totalFrames / (elapsedMs / 1000),
+      hasAudio,
+    };
   } catch (error) {
     encoder?.abort();
     throw error;

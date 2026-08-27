@@ -46,6 +46,7 @@ import {
 import type { Palette } from '@shared/palette.ts';
 import type { Track } from '@shared/track.ts';
 import { COSMETIC, stream } from '@shared/rng.ts';
+import { buildPropLayout } from './WorldLayout.ts';
 
 const SKY_VERTEX = /* glsl */ `
   varying vec3 vDir;
@@ -276,7 +277,7 @@ function moteDrift(palette: Palette): Vector3 {
  * Returns a group to add to the scene plus a handle on the motes, which are the
  * only part that animates.
  */
-export function buildWorld(palette: Palette, track: Track): WorldParts {
+export function buildWorld(palette: Palette, track: Track, seed: string): WorldParts {
   const group = new Group();
   group.name = 'world';
   if (palette.kind !== 'surface') return { group, motes: null };
@@ -286,13 +287,15 @@ export function buildWorld(palette: Palette, track: Track): WorldParts {
   const mid = track.table.frameAt(track.total * 0.5).p;
   const centre = new Vector3(mid.x, mid.y, mid.z);
   // How far the track wanders, used to size the terrain and the scatter radius.
-  const start = track.table.frameAt(0).p;
-  const end = track.table.frameAt(track.total).p;
-  const reach =
-    Math.max(
-      Math.hypot(start.x - centre.x, start.z - centre.z),
-      Math.hypot(end.x - centre.x, end.z - centre.z),
-    ) + 90;
+  // Use the WHOLE course, not only start and finish. A spiral can travel far
+  // outside both endpoints, and sizing a world from those two points alone can
+  // put legitimate scenery beyond its terrain plate.
+  let courseReach = 0;
+  for (let i = 0; i <= 96; i++) {
+    const p = track.table.frameAt((i / 96) * track.total).p;
+    courseReach = Math.max(courseReach, Math.hypot(p.x - centre.x, p.z - centre.z));
+  }
+  const reach = courseReach + 90;
 
   // ---- sky dome
   const sky = new Mesh(
@@ -385,7 +388,7 @@ export function buildWorld(palette: Palette, track: Track): WorldParts {
     // ---- scenery
     const propGeo = propGeometry(palette);
     if (propGeo && palette.propCount > 0) {
-      const rng = stream('props', COSMETIC.props);
+      const placements = buildPropLayout(palette, track, seed, groundHeightAt);
       const mesh = new InstancedMesh(
         propGeo,
         new MeshStandardMaterial({ color: palette.propColor, roughness: 0.9, metalness: 0 }),
@@ -395,32 +398,18 @@ export function buildWorld(palette: Palette, track: Track): WorldParts {
       const pos = new Vector3();
       const quat = new Quaternion();
       const scale = new Vector3();
-      for (let i = 0; i < palette.propCount; i++) {
-        // Scatter in an annulus: close enough to read as scenery, never so
-        // close that a tree grows through the chute.
-        const angle = rng.next() * Math.PI * 2;
-        const radius = 22 + rng.next() * (reach * 0.9);
-        const px = centre.x + Math.cos(angle) * radius;
-        const pz = centre.z + Math.sin(angle) * radius;
-        pos.set(px, groundHeightAt(px, pz), pz);
-
-        if (palette.props === 'dunes') {
-          const s = rng.range(9, 26);
-          scale.set(s, s * rng.range(0.16, 0.3), s * rng.range(0.5, 0.9));
-          quat.setFromAxisAngle(new Vector3(0, 1, 0), rng.next() * Math.PI);
-        } else if (palette.props === 'shards') {
-          const s = rng.range(2.5, 9);
-          scale.set(s * rng.range(0.4, 0.8), s * rng.range(1.4, 3), s * rng.range(0.4, 0.8));
-          quat.setFromAxisAngle(new Vector3(rng.signed(), 1, rng.signed()).normalize(), rng.signed() * 0.4);
-        } else {
-          const s = rng.range(2.2, 5.5);
-          scale.set(s * rng.range(0.7, 1.1), s * rng.range(1.4, 2.6), s * rng.range(0.7, 1.1));
-          quat.setFromAxisAngle(new Vector3(0, 1, 0), rng.next() * Math.PI * 2);
-        }
-        // Sit on the ground rather than centred in it.
-        pos.y += scale.y * 0.5;
+      const axis = new Vector3();
+      for (let i = 0; i < placements.length; i++) {
+        const placement = placements[i];
+        pos.set(placement.x, placement.y, placement.z);
+        scale.set(placement.scaleX, placement.scaleY, placement.scaleZ);
+        axis.set(placement.axisX, placement.axisY, placement.axisZ);
+        quat.setFromAxisAngle(axis, placement.angle);
         mesh.setMatrixAt(i, matrix.compose(pos, quat, scale));
       }
+      // Rejection is allowed to leave fewer instances than the world's budget.
+      // Uninitialised matrices must never render at the origin, on the grid.
+      mesh.count = placements.length;
       mesh.instanceMatrix.needsUpdate = true;
       group.add(mesh);
     }
@@ -429,7 +418,7 @@ export function buildWorld(palette: Palette, track: Track): WorldParts {
   // ---- atmosphere
   let motes: WorldParts['motes'] = null;
   if (palette.motes !== 'none' && palette.moteCount > 0) {
-    const rng = stream('motes', COSMETIC.motes);
+    const rng = stream(seed, COSMETIC.motes);
     const span = 90;
     const count = palette.moteCount;
     const array = new Float32Array(count * 3);

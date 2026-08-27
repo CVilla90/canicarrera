@@ -32,6 +32,7 @@ import {
   type RenderPreset,
 } from '../render/presets.ts';
 import { exportSeconds, resolveDrawCost } from '../render/cost.ts';
+import { deviceProfile } from '../render/device.ts';
 
 export { pixelFactor };
 
@@ -65,7 +66,10 @@ export interface Capability {
 // v2: measurements became relative to a known baseline preset.
 // v3: added measured per-preset draw cost. A v2 entry still works — the cost
 //     model falls back to the static guess — but it is worth retaking once.
-const CACHE_KEY = 'canicarrera.capability.v3';
+// v4: the probe now measures at a device-appropriate resolution and normalises
+//     to 1080p. The numbers mean the same thing but are no longer produced the
+//     same way, so old entries are discarded rather than reinterpreted.
+const CACHE_KEY = 'canicarrera.capability.v4';
 
 /**
  * Seconds this machine needs to export `frames` frames at `quality` + `preset`.
@@ -113,7 +117,16 @@ async function benchmarkScene(scene: RaceScene): Promise<Benchmark | null> {
   // permanently recommending 720p to someone who opened the page in a
   // background tab.
   if (typeof document !== 'undefined' && document.hidden) return null;
-  const reference = qualityById('1080p30');
+
+  // Measure at a resolution this device can hold, not always at 1080p.
+  //
+  // The probe is the most memory-hungry thing the app ever does — it renders
+  // every preset, including the 2x-supersampled ones, and it does it during
+  // boot. At 1080p that means allocating a 3840x2160 half-float pair on a phone
+  // before the user has watched a single race. Phones measure at 720p and the
+  // result is normalised below, so the cost model still speaks in 1080p terms.
+  const reference = qualityById(deviceProfile().benchmarkQualityId);
+  const referenceScale = pixelFactor(reference);
   const codec = await pickCodec(reference);
   if (!codec) return null;
 
@@ -137,7 +150,13 @@ async function benchmarkScene(scene: RaceScene): Promise<Benchmark | null> {
     const rasterFrames = 12;
     const rasterStart = performance.now();
     for (let i = 0; i < rasterFrames; i++) scene.renderFrameAt((6 + i) / 30, 1 / 30);
-    const rasterFps = rasterFrames / ((performance.now() - rasterStart) / 1000);
+    const rasterMeasured = rasterFrames / ((performance.now() - rasterStart) / 1000);
+    // Normalised to 1080p, which is the unit `cost.ts` works in. Measuring at
+    // 720p produces a HIGHER frame rate for the same machine, so scaling by the
+    // reference's pixel factor (0.44 at 720p) converts it back. Getting this
+    // backwards would make every phone look twice as fast as it is and print an
+    // ETA half the truth on the export button.
+    const rasterFps = rasterMeasured * referenceScale;
 
     const encoder = await WebCodecsEncoder.create(reference);
     let frameIndex = 0;
@@ -165,7 +184,8 @@ async function benchmarkScene(scene: RaceScene): Promise<Benchmark | null> {
     const pipelineFrames = 30;
     const pipelineStart = performance.now();
     for (let i = 0; i < pipelineFrames; i++) await pump(false);
-    const pipelineFps = pipelineFrames / ((performance.now() - pipelineStart) / 1000);
+    const pipelineFps =
+      (pipelineFrames / ((performance.now() - pipelineStart) / 1000)) * referenceScale;
 
     // Flush AFTER timing. A flush is a fixed cost paid once per export; charging
     // it to 30 frames made this ~15x pessimistic, and the ETA on the export
@@ -176,7 +196,10 @@ async function benchmarkScene(scene: RaceScene): Promise<Benchmark | null> {
     // failure here cannot cost us the two numbers that matter most.
     let presetCost: Record<string, number> | undefined;
     try {
-      presetCost = benchmarkPresets(scene, 1000 / rasterFps);
+      // Against the RAW measurement, not the normalised one. These are ratios
+      // between presets timed at the same resolution, so normalising the
+      // denominator alone would scale every preset's cost by 2.25 on a phone.
+      presetCost = benchmarkPresets(scene, 1000 / rasterMeasured);
     } catch {
       presetCost = undefined;
     }

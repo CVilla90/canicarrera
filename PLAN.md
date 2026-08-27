@@ -497,6 +497,15 @@ that reads it can wait, the writing of it cannot.
 
 #### 5.1 Audio, in detail *(SFX · music · commentary — all optional)*
 
+> ✅ **SFX, music and the crowd shipped 2026-08-02.** Everything below was the
+> design, and it held: procedural Web Audio, one scheduler for both the live
+> `AudioContext` and the export `OfflineAudioContext`, a cosmetic RNG stream, the
+> drop bar-locked to lights-out. Two things the design did not anticipate are
+> recorded in `HANDOFF.md`: the cost of an offline render is **graph size, not
+> DSP** (so percussion is pre-baked into buffers, one node per hit), and
+> `setTimeout` backpressure in the audio encoder **hangs a background tab**.
+> **Commentary is still not built** — the clip pool below remains the plan.
+
 Everything here hangs off one thing that already exists: **`RaceSim` emits a
 timestamped event stream** (`go`, `overtake`, `finish`, `end`). Audio is a second
 consumer of that stream, exactly as the renderer is. Same seed → same soundtrack.

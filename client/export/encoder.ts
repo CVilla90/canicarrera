@@ -8,6 +8,7 @@
  * about it. See `HANDOFF.md` for what tier C still needs.
  */
 import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
+import type { AudioTrackConfig } from '../audio/render.ts';
 import type { Quality } from './quality.ts';
 
 export interface FrameEncoder {
@@ -77,10 +78,16 @@ export async function pickCodec(quality: Quality): Promise<CodecChoice | null> {
 export class WebCodecsEncoder implements FrameEncoder {
   private readonly encoder: VideoEncoder;
   private readonly muxer: Muxer<ArrayBufferTarget>;
+  /**
+   * Present only when the caller asked for sound AND the browser agreed it
+   * could encode it. `null` is a completely normal outcome — the export then
+   * produces a silent video rather than failing.
+   */
+  private readonly audio: AudioEncoder | null = null;
   private error: Error | null = null;
   private finished = false;
 
-  private constructor(quality: Quality, codec: string) {
+  private constructor(quality: Quality, codec: string, audio: AudioTrackConfig | null) {
     this.muxer = new Muxer({
       target: new ArrayBufferTarget(),
       video: {
@@ -89,6 +96,19 @@ export class WebCodecsEncoder implements FrameEncoder {
         height: quality.height,
         frameRate: quality.fps,
       },
+      // The audio track has to be DECLARED at construction — the muxer writes
+      // the track table before it has seen a single chunk. That is why the
+      // caller probes for an audio codec before creating the encoder rather
+      // than discovering halfway through that it has samples to add.
+      ...(audio
+        ? {
+            audio: {
+              codec: 'aac' as const,
+              numberOfChannels: audio.numberOfChannels,
+              sampleRate: audio.sampleRate,
+            },
+          }
+        : {}),
       // Metadata at the front, so the file starts playing immediately when
       // uploaded or opened over a network.
       fastStart: 'in-memory',
@@ -111,16 +131,34 @@ export class WebCodecsEncoder implements FrameEncoder {
       // wildly on a scene that alternates dark sky and bright confetti.
       latencyMode: 'quality',
     });
+
+    if (audio) {
+      this.audio = new AudioEncoder({
+        output: (chunk, meta) => this.muxer.addAudioChunk(chunk, meta),
+        error: (err) => {
+          this.error = err instanceof Error ? err : new Error(String(err));
+        },
+      });
+      this.audio.configure(audio);
+    }
   }
 
-  static async create(quality: Quality): Promise<WebCodecsEncoder> {
+  static async create(
+    quality: Quality,
+    audio: AudioTrackConfig | null = null,
+  ): Promise<WebCodecsEncoder> {
     const choice = await pickCodec(quality);
     if (!choice) throw new Error('Este navegador no puede codificar H.264 en ese tamaño.');
-    return new WebCodecsEncoder(quality, choice.codec);
+    return new WebCodecsEncoder(quality, choice.codec, audio);
   }
 
   get queueSize(): number {
     return this.encoder.encodeQueueSize;
+  }
+
+  /** The audio encoder, or null when this file will be silent. */
+  get audioEncoder(): AudioEncoder | null {
+    return this.audio;
   }
 
   encode(frame: VideoFrame, keyFrame: boolean): void {
@@ -129,7 +167,10 @@ export class WebCodecsEncoder implements FrameEncoder {
   }
 
   async finish(): Promise<Blob> {
+    // Both tracks have to be fully drained before the muxer is finalized, or the
+    // file ends up describing chunks it never received.
     await this.encoder.flush();
+    if (this.audio) await this.audio.flush();
     if (this.error) throw this.error;
     this.muxer.finalize();
     this.finished = true;
@@ -143,6 +184,11 @@ export class WebCodecsEncoder implements FrameEncoder {
       this.encoder.close();
     } catch {
       // Already closed — nothing to do.
+    }
+    try {
+      this.audio?.close();
+    } catch {
+      // Same.
     }
   }
 }

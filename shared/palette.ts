@@ -10,6 +10,26 @@
 import type { PaletteName } from './spec.ts';
 
 /**
+ * Who lives here.
+ *
+ * Declared in `shared/` rather than in the renderer for the same reason
+ * everything else about a world is: the palette is the *definition* of a world
+ * and `client/scene` is one reader of it. Nothing about the cast reaches the
+ * simulator — a character is a spectator, never an obstacle.
+ *
+ * Kept as a list per world rather than one species each, because a biome with
+ * two residents feels populated and a biome with one feels like a mascot.
+ */
+export type CharacterKind =
+  | 'serpiente'
+  | 'pinguino'
+  | 'mono'
+  | 'cactus'
+  | 'tucan'
+  | 'foca'
+  | 'robot';
+
+/**
  * Two families of world.
  *
  * `orbit` is the original look: a star field, no ground, the chute hanging in
@@ -125,6 +145,17 @@ export interface Palette {
   motes: MoteKind;
   moteColor: number;
   moteCount: number;
+
+  // ---- the cast (every world, both families)
+  /** Species that can appear trackside here. Drawn from per race. */
+  characters: readonly CharacterKind[];
+  /**
+   * How many stand along the run.
+   *
+   * Each one is its own `Group`, so this is a draw-call budget as much as an
+   * aesthetic choice. Six punctuates a race; twenty would line it.
+   */
+  characterCount: number;
 }
 
 /**
@@ -152,6 +183,11 @@ const ORBIT = {
   kerbs: false,
   kerbA: 0x000000,
   kerbB: 0x000000,
+  // A void has no wildlife, so orbit worlds get the one species that makes
+  // sense floating in one. Fewer of them than on a surface world: with no
+  // terrain to sit on there is nothing to hide an over-populated shot behind.
+  characters: ['robot'],
+  characterCount: 4,
 } as const satisfies Partial<Palette>;
 
 /** Shared by the surface worlds: a real sun, almost no ambient, kerbed channel. */
@@ -172,6 +208,7 @@ const SURFACE = {
   kerbs: true,
   kerbA: 0xd8382a,
   kerbB: 0xf4f4f0,
+  characterCount: 7,
 } as const satisfies Partial<Palette>;
 
 export const PALETTES: Record<PaletteName, Palette> = {
@@ -353,6 +390,9 @@ export const PALETTES: Record<PaletteName, Palette> = {
     motes: 'spores',
     moteColor: 0xffe9a0,
     moteCount: 420,
+    // A monkey and a toucan: one on the ground, one that should be in a tree,
+    // both instantly readable as "jungle" at the size they appear on screen.
+    characters: ['mono', 'tucan'],
   },
 
   desierto: {
@@ -384,6 +424,9 @@ export const PALETTES: Record<PaletteName, Palette> = {
     motes: 'sand',
     moteColor: 0xe8c894,
     moteCount: 520,
+    // The snake is drawn as a friend, not a threat — see `Characters.ts`. A
+    // coil, a big smile and a tongue that is far too small to be menacing.
+    characters: ['serpiente', 'cactus'],
   },
 
   glaciar: {
@@ -415,6 +458,7 @@ export const PALETTES: Record<PaletteName, Palette> = {
     motes: 'snow',
     moteColor: 0xffffff,
     moteCount: 600,
+    characters: ['pinguino', 'foca'],
   },
 };
 
