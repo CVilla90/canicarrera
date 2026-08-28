@@ -5,8 +5,8 @@
 > lives in `legacy/`. Everything in §2 (client-side render + WebCodecs export),
 > §2.1 (pre-sim curation), §3 (determinism) and §4.3 W1–W9 + W11 is implemented
 > and tested. Audio, biome geometry, characters, mobile HUD improvements, and
-> deterministic desert-mine and glacier-ice-cave set-piece slices also exist on
-> the active feature branch.
+> deterministic desert-mine, glacier-ice-cave, and jungle-ruin set-piece slices
+> also exist on the active feature branch.
 > **W10 — deploy and smoke-test on a phone/Safari — is not done.** B1 now has a
 > real foreground 720p measurement, but still needs its 1080p30/60, mid-laptop,
 > and SwiftShader measurements. This document stays as the strategy; it has not
@@ -688,7 +688,10 @@ and spectators, return no set piece when a grammar has no honest interval, and
 bound every interior object as well as the enclosing wall. The real foreground
 preview and encoded desert MP4 gate passed on `MINEVIEW16`; the glacier reused
 the profile-driven selector and passed the same gate on `ICEVIEW5`, including a
-completed browser download. Jungle ruins are the next vertical slice.
+completed browser download. The open jungle ruin then passed on `RUINQA105`
+after real frames corrected a safe-but-dark shell into a sunlit colonnade. All
+three surface biomes now have a verified intentional slice; in-scene attribution
+billboards are the next local product feature.
 
 #### 3.2 Track families: ovals and F1 layouts
 

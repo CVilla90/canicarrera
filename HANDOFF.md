@@ -3,15 +3,15 @@
 **Read this first.** `PLAN.md` is the strategy and still accurate; this file is
 where the code actually is.
 
-> **Latest checkpoint: 2026-08-27.** The intentional set-piece contract now also
-> carries a deterministic glacier ice cave with reserved ice shards and
-> spectators, wall-hugging ridges, cyan lights, and explicitly bounded icicles.
-> It is built on `feature/glacier-ice-cave`. Typecheck, **93/93 tests**, and the
-> production build pass. A full visible foreground race and a real completed
-> Edge download verified the approach, interior, exit, 720p30 H.264/AAC output,
-> A/V alignment, and decoder path after headless frames caught and fixed a seal
-> inside the cave. Device QA remains. Exact metrics, files, risks, and the
-> restart point are in `docs/CURRENT_WORK.md`.
+> **Latest checkpoint: 2026-08-27.** All three surface biomes now have an
+> intentional deterministic set piece. The newest is an open jungle ruin with
+> reserved trees/spectators and bounded arches, masonry, vines, and glyphs on
+> `feature/jungle-ruins`. Typecheck, **102/102 tests**, and the production build
+> pass. A visible foreground race and real completed Edge download verified the
+> approach, interior, exit, 720p30 H.264/AAC output, A/V alignment, and decoder
+> path after the first visual pass was corrected from a dark tunnel into a
+> sunlit colonnade. Device QA remains. Exact metrics, files, risks, and restart
+> point are in `docs/CURRENT_WORK.md`.
 
 *Earlier baseline (2026-08-02): Stage 0 was built and pre-flight-checked; that
 session added **audio**, **characters**, and the **mobile/iPhone** fixes, and
@@ -21,9 +21,9 @@ solved the surface-world grading bug that had been open since 2026-08-01.
 ## Version control
 
 `github.com/CVilla90/canicarrera`, public. `main` contains the older published
-baseline; active work is on `feature/glacier-ice-cave`, based on the pushed
-desert-mine checkpoint. Commit `b4a31e8` preserves the complete pre-tunnel
-checkpoint before the mine implementation.
+baseline; active work is on `feature/jungle-ruins`, based on pushed glacier
+commit `fda23d6`. Commit `b4a31e8` preserves the complete pre-tunnel checkpoint
+before the mine implementation.
 
 ⚠️ The stored `gh` tokens on this laptop are stale. Push over the personal SSH alias:
 `git@github-personal:CVilla90/canicarrera.git` (already set as `origin`). The
@@ -51,7 +51,7 @@ export an MP4.
 | Soundtrack | drop lands exactly on lights-out; **0** clipped samples; the MP4's audio decodes to **79.94 s** against **79.93 s** of video |
 | Surface worlds | the pale-wash bug is **fixed** — same pixel 192,187,137 → 46,96,24 |
 
-`npm test` is currently **93 checks** and takes a few seconds. Run it after touching
+`npm test` is currently **102 checks** and takes a few seconds. Run it after touching
 anything in `shared/`, `client/render/` or `client/audio/`.
 
 The newer foreground Edge probe measured **789.5 raster fps** and **83.9 pipeline
@@ -230,6 +230,29 @@ same grid/finish, chute, chase-camera, and non-local-track safety direction.
   real-time traversal frames, and Edge completed a 44,512,875-byte 720p30
   H.264/AAC download. FFmpeg decoded it cleanly and encoded frames match the
   preview without the HTML HUD.
+
+### Jungle ruin set piece (added 2026-08-27)
+
+The third surface slice uses `${COSMETIC.setPieces}:jungle` and the same profile-
+driven selector. Its conservative 9.15 m exterior reserves non-local track,
+trees, and spectators even though the renderer deliberately leaves the space
+between arches open to daylight.
+
+- All 60 representative jungle tracks select distinct, deterministic safe
+  ruins. All 9,000 requested trees remain; there are zero ruin/approach
+  intersections and the tightest extra prop margin is 0.19 m.
+- Arches, broken wall stones, hanging vines, and warm/green glyphs are pure
+  contract data. Stone and vine radii measure at least 0.54 m and 0.35 m beyond
+  the complete camera envelope in the final suite.
+- The first production pass had a continuous dark shell. It passed every
+  clearance test but read as a brown tunnel. Removing that shell produced an
+  open weathered colonnade with visible jungle between the ribs; the bounded
+  stone/vine density was raised to keep the ruin legible.
+- A visible focused `RUINQA105` run captured approach through departure with no
+  spectator in the reserved arc. Edge then completed a 42,456,920-byte 720p30
+  H.264/AAC download. Its 2,014 video frames, 67.133 s video, 67.136 s audio,
+  fast-start atoms, and both streams decode cleanly; extracted frames match the
+  corrected foreground view without the HTML HUD.
 
 No physics or race-spec field changed. `SIM_VERSION` and `GENERATOR_VERSION`
 remain unchanged.
@@ -543,10 +566,10 @@ error — that is the failure mode to recognise.
 
 ## Next
 
-1. **Jungle ruin vertical slice** — reuse the profile-driven set-piece selector,
-   reserve foliage and spectators first, and bound every arch, root, stone, and
-   vine against the chase-camera envelope. It must pass the same 60-track,
-   foreground, and encoded-MP4 gate as the mine and ice cave.
+1. **In-scene attribution billboards and an outro card** — canvas-textured scene
+   objects, not HTML, so `CANICARRERA`, Carlos's credit, and a URL survive in
+   exported MP4s. Give placement a pure layout contract and verify foreground /
+   encoded parity before considering sponsor inventory.
 2. **Deploy** (W10) — still the product-launch blocker and the only way to run
    the real iPhone/Safari check against the intended hosting path.
    🔴 **Use a blank Repl + `git clone https://github.com/CVilla90/canicarrera.git`.

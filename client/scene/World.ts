@@ -28,6 +28,7 @@ import {
   Color,
   ConeGeometry,
   CylinderGeometry,
+  Euler,
   Group,
   InstancedMesh,
   Matrix4,
@@ -54,8 +55,10 @@ import { buildPropLayout } from './WorldLayout.ts';
 import {
   buildDesertMineTunnelLayout,
   buildGlacierIceCaveLayout,
+  buildJungleRuinLayout,
   type DesertMineTunnelLayout,
   type GlacierIceCaveLayout,
+  type JungleRuinLayout,
   type LayoutVec3,
   type TunnelSetPieceLayout,
 } from './SetPieceLayout.ts';
@@ -572,6 +575,152 @@ function buildGlacierIceCave(layout: GlacierIceCaveLayout): Group {
 }
 
 /**
+ * Ancient jungle passage built only from the pure ruin contract.
+ *
+ * The open arches hug the outside of the camera envelope and leave jungle sun
+ * between them, so the structure reads as a ruin rather than a third tunnel.
+ * Loose blocks and vines use the contract's conservative radii, so this
+ * function is deliberately just a transform consumer and cannot invent a new
+ * obstruction.
+ */
+function buildJungleRuin(layout: JungleRuinLayout): Group {
+  const group = new Group();
+  group.name = 'jungle-ruin';
+
+  const portalGeometry = new TorusGeometry(layout.interiorRadius + 0.02, 0.62, 5, 20);
+  const portalMaterial = new MeshStandardMaterial({
+    color: 0x9b8a68,
+    roughness: 0.96,
+    metalness: 0,
+    flatShading: true,
+  });
+  const mossMaterial = new MeshStandardMaterial({
+    color: 0x476b35,
+    roughness: 1,
+    metalness: 0,
+  });
+  const portalForward = new Vector3(0, 0, 1);
+  for (const [name, portal] of [
+    ['jungle-ruin-entrance', layout.entrance],
+    ['jungle-ruin-exit', layout.exit],
+  ] as const) {
+    const rotation = new Quaternion().setFromUnitVectors(portalForward, vector(portal.t).normalize());
+    const rim = new Mesh(portalGeometry, portalMaterial);
+    rim.name = name;
+    rim.position.copy(vector(portal.p));
+    rim.quaternion.copy(rotation);
+    group.add(rim);
+
+    const moss = new Mesh(
+      new TorusGeometry(layout.interiorRadius + 0.08, 0.16, 5, 20),
+      mossMaterial,
+    );
+    moss.name = `${name}-moss`;
+    moss.position.copy(rim.position);
+    moss.quaternion.copy(rotation);
+    group.add(moss);
+  }
+
+  const archGeometry = new TorusGeometry(layout.interiorRadius - 0.38, 0.34, 4, 18);
+  const arches = new InstancedMesh(
+    archGeometry,
+    new MeshStandardMaterial({
+      color: 0x8d8264,
+      roughness: 0.98,
+      metalness: 0,
+      flatShading: true,
+    }),
+    layout.arches.length,
+  );
+  arches.name = 'jungle-ruin-arches';
+  const matrix = new Matrix4();
+  const quaternion = new Quaternion();
+  for (let i = 0; i < layout.arches.length; i++) {
+    const arch = layout.arches[i];
+    quaternion.setFromUnitVectors(portalForward, vector(arch.t).normalize());
+    arches.setMatrixAt(i, matrix.compose(vector(arch.p), quaternion, new Vector3(1, 1, 1)));
+  }
+  arches.count = layout.arches.length;
+  arches.instanceMatrix.needsUpdate = true;
+  group.add(arches);
+
+  const stoneGeometry = new BoxGeometry(1, 1, 1);
+  const stones = new InstancedMesh(
+    stoneGeometry,
+    new MeshStandardMaterial({ color: 0x75694f, roughness: 1, metalness: 0, flatShading: true }),
+    layout.stones.length,
+  );
+  stones.name = 'jungle-ruin-wall-stones';
+  const rotation = new Quaternion();
+  const euler = new Euler();
+  for (let i = 0; i < layout.stones.length; i++) {
+    const stone = layout.stones[i];
+    euler.set(stone.rotation.x, stone.rotation.y, stone.rotation.z, 'XYZ');
+    rotation.setFromEuler(euler);
+    stones.setMatrixAt(
+      i,
+      matrix.compose(
+        vector(stone.position),
+        rotation,
+        new Vector3(stone.radius * 1.2, stone.radius * 0.85, stone.radius * 1.1),
+      ),
+    );
+  }
+  stones.count = layout.stones.length;
+  stones.instanceMatrix.needsUpdate = true;
+  group.add(stones);
+
+  const vineGeometry = new CylinderGeometry(1, 0.72, 1, 6);
+  const vines = new InstancedMesh(
+    vineGeometry,
+    new MeshStandardMaterial({ color: 0x386d32, roughness: 0.9, metalness: 0 }),
+    layout.vines.length,
+  );
+  vines.name = 'jungle-ruin-vines';
+  const root = new Vector3();
+  const tip = new Vector3();
+  const direction = new Vector3();
+  const midpoint = new Vector3();
+  const vineAxis = new Vector3(0, 1, 0);
+  for (let i = 0; i < layout.vines.length; i++) {
+    const vine = layout.vines[i];
+    root.copy(vector(vine.root));
+    tip.copy(vector(vine.tip));
+    direction.subVectors(tip, root).normalize();
+    midpoint.addVectors(root, tip).multiplyScalar(0.5);
+    quaternion.setFromUnitVectors(vineAxis, direction);
+    vines.setMatrixAt(
+      i,
+      matrix.compose(
+        midpoint,
+        quaternion,
+        new Vector3(vine.radius, vine.length, vine.radius),
+      ),
+    );
+  }
+  vines.count = layout.vines.length;
+  vines.instanceMatrix.needsUpdate = true;
+  group.add(vines);
+
+  for (let i = 0; i < layout.glyphs.length; i++) {
+    const glyph = layout.glyphs[i];
+    const marker = new Mesh(
+      new OctahedronGeometry(0.22, 0),
+      new MeshBasicMaterial({ color: glyph.color }),
+    );
+    marker.name = `jungle-ruin-glyph-${i + 1}`;
+    marker.position.copy(vector(glyph.position));
+    group.add(marker);
+
+    const light = new PointLight(glyph.color, glyph.intensity, glyph.distance, 2);
+    light.position.copy(marker.position);
+    group.add(light);
+  }
+
+  return group;
+}
+
+/**
  * Builds everything that is not the track, the marbles or the lights.
  *
  * Returns a group to add to the scene plus a handle on the motes, which are the
@@ -668,7 +817,9 @@ export function buildWorld(palette: Palette, track: Track, seed: string): WorldP
         ? buildDesertMineTunnelLayout(track, seed)
         : palette.name === 'glaciar'
           ? buildGlacierIceCaveLayout(track, seed)
-          : null;
+          : palette.name === 'jungla'
+            ? buildJungleRuinLayout(track, seed)
+            : null;
     const segments = 64;
     const size = reach * 4;
     const groundGeo = new PlaneGeometry(size, size, segments, segments);
@@ -696,6 +847,7 @@ export function buildWorld(palette: Palette, track: Track, seed: string): WorldP
 
     if (setPiece?.kind === 'desert-mine') group.add(buildDesertMineTunnel(setPiece));
     if (setPiece?.kind === 'glacier-ice-cave') group.add(buildGlacierIceCave(setPiece));
+    if (setPiece?.kind === 'jungle-ruin') group.add(buildJungleRuin(setPiece));
 
     // ---- scenery
     const propGeo = propGeometry(palette);

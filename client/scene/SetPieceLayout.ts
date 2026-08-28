@@ -37,6 +37,18 @@ export const ICE_CAVE_ICICLE_CAMERA_MARGIN = 0.35;
 export const ICE_CAVE_MAX_TANGENT_ANGLE = MINE_MAX_TANGENT_ANGLE;
 export const ICE_CAVE_MAX_SLOPE = MINE_MAX_SLOPE;
 
+export const JUNGLE_RUIN_PREFERRED_LENGTH = 30;
+export const JUNGLE_RUIN_MIN_LENGTH = 14;
+export const JUNGLE_RUIN_GRID_BUFFER = 45;
+export const JUNGLE_RUIN_FINISH_BUFFER = 10;
+export const JUNGLE_RUIN_INTERIOR_RADIUS = 7;
+export const JUNGLE_RUIN_OUTER_RADIUS = 9.15;
+export const JUNGLE_RUIN_CAMERA_ENVELOPE_RADIUS = 5.5;
+export const JUNGLE_RUIN_PROP_EXCLUSION_RADIUS = 9.9;
+export const JUNGLE_RUIN_DRESSING_CAMERA_MARGIN = 0.35;
+export const JUNGLE_RUIN_MAX_TANGENT_ANGLE = MINE_MAX_TANGENT_ANGLE;
+export const JUNGLE_RUIN_MAX_SLOPE = MINE_MAX_SLOPE;
+
 const MINE_SAMPLE_SPACING = 1;
 const MINE_CANDIDATE_STEP = 2;
 const MINE_SEGMENT_INSET = 2;
@@ -87,6 +99,19 @@ const ICE_CAVE_PROFILE: TunnelProfile = {
   maxSlope: ICE_CAVE_MAX_SLOPE,
 };
 
+const JUNGLE_RUIN_PROFILE: TunnelProfile = {
+  preferredLength: JUNGLE_RUIN_PREFERRED_LENGTH,
+  minLength: JUNGLE_RUIN_MIN_LENGTH,
+  gridBuffer: JUNGLE_RUIN_GRID_BUFFER,
+  finishBuffer: JUNGLE_RUIN_FINISH_BUFFER,
+  interiorRadius: JUNGLE_RUIN_INTERIOR_RADIUS,
+  outerRadius: JUNGLE_RUIN_OUTER_RADIUS,
+  cameraEnvelopeRadius: JUNGLE_RUIN_CAMERA_ENVELOPE_RADIUS,
+  propExclusionRadius: JUNGLE_RUIN_PROP_EXCLUSION_RADIUS,
+  maxTangentAngle: JUNGLE_RUIN_MAX_TANGENT_ANGLE,
+  maxSlope: JUNGLE_RUIN_MAX_SLOPE,
+};
+
 export interface LayoutVec3 {
   x: number;
   y: number;
@@ -115,7 +140,7 @@ export interface MineLamp {
 }
 
 interface TunnelSetPieceBase {
-  kind: 'desert-mine' | 'glacier-ice-cave';
+  kind: 'desert-mine' | 'glacier-ice-cave' | 'jungle-ruin';
   startS: number;
   endS: number;
   length: number;
@@ -161,7 +186,40 @@ export interface GlacierIceCaveLayout extends TunnelSetPieceBase {
   glows: readonly MineLamp[];
 }
 
-export type TunnelSetPieceLayout = DesertMineTunnelLayout | GlacierIceCaveLayout;
+export interface JungleRuinStone {
+  s: number;
+  position: LayoutVec3;
+  radius: number;
+  rotation: LayoutVec3;
+  /** Conservative gap between the complete stone and camera envelope. */
+  cameraClearance: number;
+}
+
+export interface JungleRuinVine {
+  s: number;
+  root: LayoutVec3;
+  tip: LayoutVec3;
+  radius: number;
+  length: number;
+  /** Conservative gap between the hanging vine and camera envelope. */
+  cameraClearance: number;
+}
+
+export interface JungleRuinLayout extends TunnelSetPieceBase {
+  kind: 'jungle-ruin';
+  arches: readonly SetPieceFrame[];
+  stones: readonly JungleRuinStone[];
+  vines: readonly JungleRuinVine[];
+  glyphs: readonly MineLamp[];
+}
+
+export type IntentionalSetPieceLayout =
+  | DesertMineTunnelLayout
+  | GlacierIceCaveLayout
+  | JungleRuinLayout;
+
+/** Compatibility name retained for the two earlier tunnel-shaped slices. */
+export type TunnelSetPieceLayout = IntentionalSetPieceLayout;
 
 interface Candidate {
   startS: number;
@@ -539,5 +597,118 @@ export function buildGlacierIceCaveLayout(
     ridges,
     icicles,
     glows,
+  };
+}
+
+/**
+ * Selects an ancient jungle passage through the shared safety gate. Weathered
+ * stones and hanging vines are authored against the straight shell axis so
+ * their stored radii are real camera-clearance guarantees, not renderer guesses.
+ */
+export function buildJungleRuinLayout(
+  track: Track,
+  seed: string,
+): JungleRuinLayout | null {
+  const selection = chooseCandidate(
+    track,
+    seed,
+    JUNGLE_RUIN_PROFILE,
+    `${COSMETIC.setPieces}:jungle`,
+  );
+  if (!selection) return null;
+  const { chosen, rng } = selection;
+  const arches = buildInteriorFrames(track, chosen, 3.8);
+
+  const stones: JungleRuinStone[] = [];
+  const stoneCount = Math.max(4, Math.floor(chosen.length / 3.8));
+  for (let i = 0; i < stoneCount; i++) {
+    const s = chosen.startS + ((i + 0.75) / (stoneCount + 0.5)) * chosen.length;
+    const frame = frameData(s, track.table.frameAt(s));
+    const angle = (i % 2 === 0 ? -1 : 1) * rng.range(0.95, 1.35);
+    const authoredRadial = {
+      x: frame.up.x * Math.cos(angle) + frame.side.x * Math.sin(angle),
+      y: frame.up.y * Math.cos(angle) + frame.side.y * Math.sin(angle),
+      z: frame.up.z * Math.cos(angle) + frame.side.z * Math.sin(angle),
+    };
+    const radial = normalise(addScaled(authoredRadial, chosen.axis, -dot(authoredRadial, chosen.axis)));
+    const along = dot(subtract(frame.p, chosen.entrance.p), chosen.axis);
+    const axisPoint = addScaled(chosen.entrance.p, chosen.axis, along);
+    const radius = rng.range(0.36, 0.62);
+    const position = addScaled(axisPoint, radial, JUNGLE_RUIN_INTERIOR_RADIUS - 0.34);
+    const cameraClearance =
+      distanceToSetPieceAxis(position, chosen.entrance.p, chosen.axis) -
+      radius -
+      JUNGLE_RUIN_CAMERA_ENVELOPE_RADIUS;
+    stones.push({
+      s,
+      position,
+      radius,
+      rotation: {
+        x: rng.range(-0.45, 0.45),
+        y: rng.range(-Math.PI, Math.PI),
+        z: rng.range(-0.45, 0.45),
+      },
+      cameraClearance,
+    });
+  }
+
+  const vines: JungleRuinVine[] = [];
+  const vineCount = Math.max(4, Math.floor(chosen.length / 3));
+  for (let i = 0; i < vineCount; i++) {
+    const s = chosen.startS + ((i + 0.55) / (vineCount + 0.1)) * chosen.length;
+    const frame = frameData(s, track.table.frameAt(s));
+    const angle = rng.range(-0.72, 0.72);
+    const authoredRadial = {
+      x: frame.up.x * Math.cos(angle) + frame.side.x * Math.sin(angle),
+      y: frame.up.y * Math.cos(angle) + frame.side.y * Math.sin(angle),
+      z: frame.up.z * Math.cos(angle) + frame.side.z * Math.sin(angle),
+    };
+    const radial = normalise(addScaled(authoredRadial, chosen.axis, -dot(authoredRadial, chosen.axis)));
+    const along = dot(subtract(frame.p, chosen.entrance.p), chosen.axis);
+    const axisPoint = addScaled(chosen.entrance.p, chosen.axis, along);
+    const radius = rng.range(0.08, 0.14);
+    const rootRadius = JUNGLE_RUIN_INTERIOR_RADIUS - 0.26;
+    const maxLength =
+      rootRadius -
+      JUNGLE_RUIN_CAMERA_ENVELOPE_RADIUS -
+      JUNGLE_RUIN_DRESSING_CAMERA_MARGIN -
+      radius;
+    const vineLength = rng.range(0.38, Math.max(0.39, Math.min(0.8, maxLength)));
+    const root = addScaled(axisPoint, radial, rootRadius);
+    const tip = addScaled(root, radial, -vineLength);
+    const cameraClearance =
+      distanceToSetPieceAxis(tip, chosen.entrance.p, chosen.axis) -
+      radius -
+      JUNGLE_RUIN_CAMERA_ENVELOPE_RADIUS;
+    vines.push({ s, root, tip, radius, length: vineLength, cameraClearance });
+  }
+
+  const glyphColors = [0xffc768, 0xb9dc75, 0x7fd59a] as const;
+  const glyphs: MineLamp[] = [];
+  for (let i = 0; i < arches.length; i += 2) {
+    const arch = arches[i];
+    const side = i % 4 === 0 ? -1 : 1;
+    let position = addScaled(arch.p, arch.up, JUNGLE_RUIN_INTERIOR_RADIUS - 1.05);
+    position = addScaled(position, arch.side, side * 2.25);
+    glyphs.push({
+      position,
+      color: glyphColors[rng.int(glyphColors.length)],
+      intensity: rng.range(18, 28),
+      distance: rng.range(12, 16),
+    });
+  }
+
+  return {
+    kind: 'jungle-ruin',
+    ...chosen,
+    interiorRadius: JUNGLE_RUIN_INTERIOR_RADIUS,
+    outerRadius: JUNGLE_RUIN_OUTER_RADIUS,
+    cameraEnvelopeRadius: JUNGLE_RUIN_CAMERA_ENVELOPE_RADIUS,
+    propExclusion: buildPropExclusion(track, chosen, JUNGLE_RUIN_PROP_EXCLUSION_RADIUS),
+    spectatorExclusion: buildSpectatorExclusion(track, chosen),
+    arches,
+    stones,
+    vines,
+    glyphs,
   };
 }

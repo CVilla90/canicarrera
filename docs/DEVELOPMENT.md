@@ -94,8 +94,9 @@ When adding an ordinary prop kind, update its geometry footprint in
 has no clearance guarantee.
 
 Intentional crossings are different. `client/scene/SetPieceLayout.ts` is the
-renderer-free contract. The desert mine is the reference selector and the
-glacier ice cave proves the same selector can safely carry different dressing:
+renderer-free contract. The desert mine is the reference selector, the glacier
+ice cave proves it can carry a different shell, and the open jungle ruin proves
+the conservative exterior may reserve geometry without rendering a solid wall:
 
 1. Search only declared straight segments, then validate actual sampled tangent,
    slope, grid/finish distance, and non-local track clearance.
@@ -112,6 +113,12 @@ glacier ice cave proves the same selector can safely carry different dressing:
    skip it when neither adjacent safe arc fits.
 6. Build preview and export from the same static group and animate any future
    moving part from `sim.time`.
+
+The jungle ruin's arches are deliberately open to daylight. `outerRadius` is a
+non-local-track and scenery reservation, not a promise that every set piece has
+a continuous outer mesh. Fixed renderer geometry still needs a pure asserted
+inner bound; changing an arch's torus thickness without its margin test is a
+contract violation even when the track itself remains clear.
 
 The selector must return `null` rather than force a mine onto an unsafe future
 track grammar. Never make an ordinary prop intersect and call the overlap a

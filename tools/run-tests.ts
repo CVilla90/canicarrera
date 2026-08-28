@@ -60,6 +60,12 @@ import {
   ICE_CAVE_MAX_SLOPE,
   ICE_CAVE_MAX_TANGENT_ANGLE,
   ICE_CAVE_MIN_LENGTH,
+  JUNGLE_RUIN_DRESSING_CAMERA_MARGIN,
+  JUNGLE_RUIN_FINISH_BUFFER,
+  JUNGLE_RUIN_GRID_BUFFER,
+  JUNGLE_RUIN_MAX_SLOPE,
+  JUNGLE_RUIN_MAX_TANGENT_ANGLE,
+  JUNGLE_RUIN_MIN_LENGTH,
   MINE_FINISH_BUFFER,
   MINE_GRID_BUFFER,
   MINE_MAX_SLOPE,
@@ -67,6 +73,7 @@ import {
   MINE_TUNNEL_MIN_LENGTH,
   buildDesertMineTunnelLayout,
   buildGlacierIceCaveLayout,
+  buildJungleRuinLayout,
   distanceToSetPieceAxis,
 } from '../client/scene/SetPieceLayout.ts';
 import {
@@ -543,6 +550,174 @@ section('Glacier ice cave');
       `${(sparsestPropRatio * 100).toFixed(1)}% sparsest layout · ` +
       `${smallestPropMargin.toFixed(2)} m prop margin · ` +
       `${smallestIcicleClearance.toFixed(2)} m icicle margin`,
+  );
+}
+
+// --------------------------------------------------------------- jungle ruin
+//
+// Ruins deliberately cross the chute, so trees, spectators, arches, wall
+// stones and hanging vines all need contracts before a mesh exists. The last
+// three are measured against the same authored axis as the chase camera.
+section('Jungle ruin');
+{
+  let selected = 0;
+  let deterministic = true;
+  let validInterval = true;
+  let validEnvelope = true;
+  let validDressing = true;
+  let propViolations = 0;
+  let wantedProps = 0;
+  let placedProps = 0;
+  let sparsestPropRatio = 1;
+  let smallestPropMargin = Infinity;
+  let smallestStoneClearance = Infinity;
+  let smallestVineClearance = Infinity;
+  const fingerprints = new Set<string>();
+
+  for (const archetype of ARCHETYPE_NAMES) {
+    for (let i = 0; i < 12; i++) {
+      const seed = `JUNGLE_RUIN_${archetype}_${i}`;
+      const spec = generateSpec(seed, { archetype, palette: 'jungla' });
+      const track = buildTrack(spec.track);
+      const first = buildJungleRuinLayout(track, seed);
+      const second = buildJungleRuinLayout(track, seed);
+      if (JSON.stringify(first) !== JSON.stringify(second)) deterministic = false;
+      if (!first) continue;
+
+      selected++;
+      fingerprints.add(JSON.stringify(first));
+      validInterval &&=
+        first.startS >= JUNGLE_RUIN_GRID_BUFFER - 1e-9 &&
+        first.endS <= track.finishS - JUNGLE_RUIN_FINISH_BUFFER + 1e-9 &&
+        first.length >= JUNGLE_RUIN_MIN_LENGTH - 1e-9 &&
+        first.metrics.minTangentDot >= Math.cos(JUNGLE_RUIN_MAX_TANGENT_ANGLE) - 1e-9 &&
+        first.metrics.maxSlope <= JUNGLE_RUIN_MAX_SLOPE + 1e-9;
+      validEnvelope &&=
+        first.metrics.maxTrackAxisOffset + track.tubeRadius < first.interiorRadius &&
+        first.metrics.maxCameraAxisOffset <= first.cameraEnvelopeRadius + 1e-9 &&
+        first.cameraEnvelopeRadius < first.interiorRadius &&
+        first.metrics.nearestOtherTrack >= first.outerRadius + track.tubeRadius;
+
+      for (const stone of first.stones) {
+        const measuredClearance =
+          distanceToSetPieceAxis(stone.position, first.entrance.p, first.axis) -
+          stone.radius -
+          first.cameraEnvelopeRadius;
+        smallestStoneClearance = Math.min(smallestStoneClearance, measuredClearance);
+        validDressing &&=
+          stone.s > first.startS &&
+          stone.s < first.endS &&
+          stone.radius > 0 &&
+          Math.abs(stone.cameraClearance - measuredClearance) < 1e-9 &&
+          measuredClearance >= JUNGLE_RUIN_DRESSING_CAMERA_MARGIN - 1e-9;
+      }
+      for (const vine of first.vines) {
+        const measuredClearance =
+          distanceToSetPieceAxis(vine.tip, first.entrance.p, first.axis) -
+          vine.radius -
+          first.cameraEnvelopeRadius;
+        smallestVineClearance = Math.min(smallestVineClearance, measuredClearance);
+        validDressing &&=
+          vine.s > first.startS &&
+          vine.s < first.endS &&
+          vine.radius > 0 &&
+          vine.length > 0 &&
+          Math.abs(vine.cameraClearance - measuredClearance) < 1e-9 &&
+          measuredClearance >= JUNGLE_RUIN_DRESSING_CAMERA_MARGIN - 1e-9;
+      }
+      validDressing &&=
+        first.arches.length >= 3 &&
+        first.arches.every((arch) => arch.s > first.startS && arch.s < first.endS) &&
+        first.interiorRadius - 0.72 - first.cameraEnvelopeRadius >=
+          JUNGLE_RUIN_DRESSING_CAMERA_MARGIN &&
+        first.stones.length >= 4 &&
+        first.vines.length >= 4 &&
+        first.glyphs.length >= 2 &&
+        first.glyphs.every(
+          (glyph) =>
+            distanceToSetPieceAxis(glyph.position, first.entrance.p, first.axis) -
+              0.22 -
+              first.cameraEnvelopeRadius >=
+            JUNGLE_RUIN_DRESSING_CAMERA_MARGIN - 1e-9,
+        ) &&
+        first.propExclusion.points.length >= 3 &&
+        first.spectatorExclusion.startS < first.startS &&
+        first.spectatorExclusion.endS > first.endS &&
+        [first.startS, (first.startS + first.endS) * 0.5, first.endS].every((s) => {
+          const relocated = relocateCharacterArc(s, track.finishS, [first.spectatorExclusion]);
+          return (
+            relocated !== null &&
+            clearsCharacterExclusions(relocated, [first.spectatorExclusion])
+          );
+        });
+
+      const jungle = PALETTES.jungla;
+      const props = buildPropLayout(
+        jungle,
+        track,
+        seed,
+        (x, z) => -11 + Math.sin(x * 0.03) * 2 + Math.cos(z * 0.025) * 1.5,
+        { exclusions: [first.propExclusion] },
+      );
+      wantedProps += jungle.propCount;
+      placedProps += props.length;
+      sparsestPropRatio = Math.min(sparsestPropRatio, props.length / jungle.propCount);
+      for (const prop of props) {
+        const margin =
+          distanceToTrackPlan(prop.x, prop.z, first.propExclusion.points) -
+          (first.propExclusion.radius + prop.radius);
+        smallestPropMargin = Math.min(smallestPropMargin, margin);
+        if (!clearsPropExclusions(prop.x, prop.z, prop.radius, [first.propExclusion])) {
+          propViolations++;
+        }
+      }
+    }
+  }
+
+  const sampleCount = ARCHETYPE_NAMES.length * 12;
+  check(
+    `jungle ruins cover at least 95% of generated courses (${sampleCount} tracks)`,
+    selected >= sampleCount * 0.95,
+    `${selected}/${sampleCount} selected`,
+  );
+  check('same race -> byte-identical jungle-ruin contract', deterministic);
+  check(
+    'different races produce different jungle-ruin contracts',
+    fingerprints.size === selected,
+    `${fingerprints.size} distinct layouts`,
+  );
+  check('jungle-ruin intervals are straight and clear of grid/finish', validInterval);
+  check('chute, chase camera and non-local track clear the ruin shell', validEnvelope);
+  check(
+    'arches, glyphs, stones and vines respect the camera envelope',
+    validDressing,
+    `${smallestStoneClearance.toFixed(3)} m stone, ${smallestVineClearance.toFixed(3)} m vine`,
+  );
+  check(
+    'reserved ruin corridors retain the jungle scenery density',
+    placedProps >= wantedProps * 0.99 && sparsestPropRatio >= 0.9,
+    `${placedProps}/${wantedProps} placed, ${(sparsestPropRatio * 100).toFixed(1)}% sparsest`,
+  );
+  check(
+    'no ordinary tree enters a ruin or portal approach',
+    propViolations === 0 && smallestPropMargin >= TRACK_PLAN_SAFETY_MARGIN - 1e-9,
+    `${propViolations} violations, ${smallestPropMargin.toFixed(3)} m margin`,
+  );
+
+  const outcomeSeed = 'JUNGLE_RUIN_OUTCOME';
+  const outcomeBefore = fingerprint(outcomeSeed);
+  const outcomeSpec = generateSpec(outcomeSeed, { palette: 'jungla' });
+  buildJungleRuinLayout(buildTrack(outcomeSpec.track), outcomeSeed);
+  check(
+    'jungle-ruin selection cannot change the race outcome',
+    fingerprint(outcomeSeed) === outcomeBefore,
+  );
+  console.log(
+    `       ${selected} ruins · ${placedProps} trees · ` +
+      `${(sparsestPropRatio * 100).toFixed(1)}% sparsest layout · ` +
+      `${smallestPropMargin.toFixed(2)} m prop margin · ` +
+      `${smallestStoneClearance.toFixed(2)} m stone / ` +
+      `${smallestVineClearance.toFixed(2)} m vine margin`,
   );
 }
 
