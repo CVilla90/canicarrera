@@ -57,6 +57,7 @@ import type { CharacterKind, Palette } from '@shared/palette.ts';
 import type { Track } from '@shared/track.ts';
 import { COSMETIC, stream, type Rng } from '@shared/rng.ts';
 import { clamp } from '@shared/vec3.ts';
+import type { SetPieceArcExclusion } from './SetPieceLayout.ts';
 
 /**
  * How close the leader has to be before a character starts celebrating, metres
@@ -64,6 +65,44 @@ import { clamp } from '@shared/vec3.ts';
  * begins before the pack arrives rather than after it has gone.
  */
 const EXCITEMENT_RANGE = 26;
+const SET_PIECE_SPECTATOR_MARGIN = 2.5;
+
+export interface CharacterLayoutOptions {
+  exclusions?: readonly SetPieceArcExclusion[];
+}
+
+export function clearsCharacterExclusions(
+  s: number,
+  exclusions: readonly SetPieceArcExclusion[],
+): boolean {
+  return exclusions.every((exclusion) => s < exclusion.startS || s > exclusion.endS);
+}
+
+/** Moves a spectator to the nearest safe portal side without consuming RNG. */
+export function relocateCharacterArc(
+  s: number,
+  finishS: number,
+  exclusions: readonly SetPieceArcExclusion[],
+): number | null {
+  if (clearsCharacterExclusions(s, exclusions)) return s;
+
+  const minimum = finishS * 0.05;
+  const maximum = finishS * 0.985;
+  const candidates = exclusions
+    .flatMap((exclusion) => [
+      exclusion.startS - SET_PIECE_SPECTATOR_MARGIN,
+      exclusion.endS + SET_PIECE_SPECTATOR_MARGIN,
+    ])
+    .filter(
+      (candidate) =>
+        candidate >= minimum &&
+        candidate <= maximum &&
+        clearsCharacterExclusions(candidate, exclusions),
+    )
+    .sort((a, b) => Math.abs(a - s) - Math.abs(b - s) || a - b);
+
+  return candidates[0] ?? null;
+}
 
 interface CharacterInstance {
   group: Group;
@@ -682,7 +721,12 @@ function buildPlinth(shop: Workshop, palette: Palette, grounded: boolean): Group
  * Returns an empty cast for a palette with no characters, so the caller never
  * needs a null check.
  */
-export function buildCharacters(palette: Palette, track: Track, seed: string): CharacterCast {
+export function buildCharacters(
+  palette: Palette,
+  track: Track,
+  seed: string,
+  options: CharacterLayoutOptions = {},
+): CharacterCast {
   const group = new Group();
   group.name = 'characters';
   const shop = new Workshop();
@@ -703,7 +747,9 @@ export function buildCharacters(palette: Palette, track: Track, seed: string): C
     // race rather than clustering. The last one sits close to the finish, where
     // there is a crowd to be part of.
     const along = (i + 0.5) / count;
-    const s = clamp(along + rng.range(-0.03, 0.03), 0.05, 0.985) * track.finishS;
+    const candidateS = clamp(along + rng.range(-0.03, 0.03), 0.05, 0.985) * track.finishS;
+    const s = relocateCharacterArc(candidateS, track.finishS, options.exclusions ?? []);
+    if (s === null) continue;
     const frame = track.table.frameAt(s);
     const side = rng.chance(0.5) ? 1 : -1;
     const distance = rng.range(5.2, 8.4);

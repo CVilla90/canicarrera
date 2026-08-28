@@ -53,8 +53,11 @@ import { COSMETIC, stream } from '@shared/rng.ts';
 import { buildPropLayout } from './WorldLayout.ts';
 import {
   buildDesertMineTunnelLayout,
+  buildGlacierIceCaveLayout,
   type DesertMineTunnelLayout,
+  type GlacierIceCaveLayout,
   type LayoutVec3,
+  type TunnelSetPieceLayout,
 } from './SetPieceLayout.ts';
 
 const SKY_VERTEX = /* glsl */ `
@@ -86,6 +89,7 @@ const SKY_FRAGMENT = /* glsl */ `
 export interface WorldParts {
   group: Group;
   motes: { points: Points; drift: Vector3; span: number; base: Vector3 } | null;
+  setPiece: TunnelSetPieceLayout | null;
 }
 
 /**
@@ -401,6 +405,173 @@ function buildDesertMineTunnel(layout: DesertMineTunnelLayout): Group {
 }
 
 /**
+ * Glacier dressing for the shared tunnel contract.
+ *
+ * The shell, lining and ridges stay outside the same authored camera envelope
+ * as the mine. Icicle transforms come entirely from the pure layout, including
+ * a conservative radius around each cone, so this renderer never gets to
+ * invent an untested obstruction.
+ */
+function buildGlacierIceCave(layout: GlacierIceCaveLayout): Group {
+  const group = new Group();
+  group.name = 'glacier-ice-cave';
+
+  const axis = vector(layout.axis).normalize();
+  const centre = vector(layout.centre);
+  const shellLength = vector(layout.exit.p).distanceTo(vector(layout.entrance.p));
+  const cylinderRotation = new Quaternion().setFromUnitVectors(new Vector3(0, 1, 0), axis);
+
+  const outer = new Mesh(
+    new CylinderGeometry(
+      layout.outerRadius * 1.02,
+      layout.outerRadius * 0.98,
+      shellLength,
+      12,
+      2,
+      true,
+    ),
+    new MeshStandardMaterial({
+      color: 0x759eb8,
+      roughness: 0.72,
+      metalness: 0.06,
+      flatShading: true,
+    }),
+  );
+  outer.name = 'ice-cave-outer-shell';
+  outer.position.copy(centre);
+  outer.quaternion.copy(cylinderRotation);
+  group.add(outer);
+
+  const lining = new Mesh(
+    new CylinderGeometry(
+      layout.interiorRadius,
+      layout.interiorRadius,
+      shellLength + 0.12,
+      12,
+      2,
+      true,
+    ),
+    new MeshStandardMaterial({
+      color: 0x7fc7e4,
+      emissive: 0x163f5b,
+      emissiveIntensity: 0.42,
+      roughness: 0.34,
+      metalness: 0.08,
+      flatShading: true,
+      side: BackSide,
+    }),
+  );
+  lining.name = 'ice-cave-inner-lining';
+  lining.position.copy(centre);
+  lining.quaternion.copy(cylinderRotation);
+  group.add(lining);
+
+  const portalGeometry = new TorusGeometry(layout.interiorRadius + 0.04, 0.5, 7, 28);
+  const portalMaterial = new MeshStandardMaterial({
+    color: 0xd5f8ff,
+    emissive: 0x2a718e,
+    emissiveIntensity: 0.5,
+    roughness: 0.27,
+    metalness: 0.08,
+  });
+  const portalForward = new Vector3(0, 0, 1);
+  for (const [name, portal] of [
+    ['ice-cave-entrance', layout.entrance],
+    ['ice-cave-exit', layout.exit],
+  ] as const) {
+    const rim = new Mesh(portalGeometry, portalMaterial);
+    rim.name = name;
+    rim.position.copy(vector(portal.p));
+    rim.quaternion.setFromUnitVectors(portalForward, vector(portal.t).normalize());
+    group.add(rim);
+  }
+
+  const ridgeGeometry = new TorusGeometry(layout.interiorRadius - 0.34, 0.2, 6, 20);
+  const ridges = new InstancedMesh(
+    ridgeGeometry,
+    new MeshStandardMaterial({
+      color: 0xb8eaff,
+      emissive: 0x245a73,
+      emissiveIntensity: 0.35,
+      roughness: 0.38,
+      metalness: 0.06,
+      flatShading: true,
+    }),
+    layout.ridges.length,
+  );
+  ridges.name = 'ice-cave-crystal-ridges';
+  const matrix = new Matrix4();
+  const quaternion = new Quaternion();
+  for (let i = 0; i < layout.ridges.length; i++) {
+    const ridge = layout.ridges[i];
+    quaternion.setFromUnitVectors(portalForward, vector(ridge.t).normalize());
+    ridges.setMatrixAt(
+      i,
+      matrix.compose(vector(ridge.p), quaternion, new Vector3(1, 1, 1)),
+    );
+  }
+  ridges.count = layout.ridges.length;
+  ridges.instanceMatrix.needsUpdate = true;
+  group.add(ridges);
+
+  const icicleGeometry = new ConeGeometry(1, 1, 7);
+  const icicles = new InstancedMesh(
+    icicleGeometry,
+    new MeshStandardMaterial({
+      color: 0xd9f7ff,
+      emissive: 0x245d78,
+      emissiveIntensity: 0.34,
+      roughness: 0.24,
+      metalness: 0.04,
+      flatShading: true,
+    }),
+    layout.icicles.length,
+  );
+  icicles.name = 'ice-cave-icicles';
+  const coneAxis = new Vector3(0, 1, 0);
+  const root = new Vector3();
+  const tip = new Vector3();
+  const direction = new Vector3();
+  const midpoint = new Vector3();
+  for (let i = 0; i < layout.icicles.length; i++) {
+    const icicle = layout.icicles[i];
+    root.copy(vector(icicle.root));
+    tip.copy(vector(icicle.tip));
+    direction.subVectors(tip, root).normalize();
+    midpoint.addVectors(root, tip).multiplyScalar(0.5);
+    quaternion.setFromUnitVectors(coneAxis, direction);
+    icicles.setMatrixAt(
+      i,
+      matrix.compose(
+        midpoint,
+        quaternion,
+        new Vector3(icicle.radius, icicle.length, icicle.radius),
+      ),
+    );
+  }
+  icicles.count = layout.icicles.length;
+  icicles.instanceMatrix.needsUpdate = true;
+  group.add(icicles);
+
+  for (let i = 0; i < layout.glows.length; i++) {
+    const glow = layout.glows[i];
+    const crystal = new Mesh(
+      new OctahedronGeometry(0.24, 0),
+      new MeshBasicMaterial({ color: glow.color }),
+    );
+    crystal.name = `ice-cave-glow-${i + 1}`;
+    crystal.position.copy(vector(glow.position));
+    group.add(crystal);
+
+    const light = new PointLight(glow.color, glow.intensity, glow.distance, 2);
+    light.position.copy(crystal.position);
+    group.add(light);
+  }
+
+  return group;
+}
+
+/**
  * Builds everything that is not the track, the marbles or the lights.
  *
  * Returns a group to add to the scene plus a handle on the motes, which are the
@@ -409,7 +580,8 @@ function buildDesertMineTunnel(layout: DesertMineTunnelLayout): Group {
 export function buildWorld(palette: Palette, track: Track, seed: string): WorldParts {
   const group = new Group();
   group.name = 'world';
-  if (palette.kind !== 'surface') return { group, motes: null };
+  if (palette.kind !== 'surface') return { group, motes: null, setPiece: null };
+  let setPiece: TunnelSetPieceLayout | null = null;
 
   // Centre everything on the middle of the run, so a long course does not
   // wander off the edge of its own terrain.
@@ -489,9 +661,14 @@ export function buildWorld(palette: Palette, track: Track, seed: string): WorldP
   };
 
   if (palette.ground !== null) {
-    // Select the authored interval before ordinary props. The resulting larger
-    // exclusion corridor is then part of every dune placement decision.
-    const mine = palette.name === 'desierto' ? buildDesertMineTunnelLayout(track, seed) : null;
+    // Select authored intervals before ordinary props. The resulting larger
+    // exclusion corridor is then part of every scenery placement decision.
+    setPiece =
+      palette.name === 'desierto'
+        ? buildDesertMineTunnelLayout(track, seed)
+        : palette.name === 'glaciar'
+          ? buildGlacierIceCaveLayout(track, seed)
+          : null;
     const segments = 64;
     const size = reach * 4;
     const groundGeo = new PlaneGeometry(size, size, segments, segments);
@@ -517,13 +694,14 @@ export function buildWorld(palette: Palette, track: Track, seed: string): WorldP
     ground.position.set(centre.x, centre.y, centre.z);
     group.add(ground);
 
-    if (mine) group.add(buildDesertMineTunnel(mine));
+    if (setPiece?.kind === 'desert-mine') group.add(buildDesertMineTunnel(setPiece));
+    if (setPiece?.kind === 'glacier-ice-cave') group.add(buildGlacierIceCave(setPiece));
 
     // ---- scenery
     const propGeo = propGeometry(palette);
     if (propGeo && palette.propCount > 0) {
       const placements = buildPropLayout(palette, track, seed, groundHeightAt, {
-        exclusions: mine ? [mine.propExclusion] : [],
+        exclusions: setPiece ? [setPiece.propExclusion] : [],
       });
       const mesh = new InstancedMesh(
         propGeo,
@@ -582,7 +760,7 @@ export function buildWorld(palette: Palette, track: Track, seed: string): WorldP
     motes = { points, drift: moteDrift(palette), span, base: new Vector3() };
   }
 
-  return { group, motes };
+  return { group, motes, setPiece };
 }
 
 /**

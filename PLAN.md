@@ -4,8 +4,9 @@
 > [`HANDOFF.md`](HANDOFF.md) first.** The proof of concept described below now
 > lives in `legacy/`. Everything in §2 (client-side render + WebCodecs export),
 > §2.1 (pre-sim curation), §3 (determinism) and §4.3 W1–W9 + W11 is implemented
-> and tested. Audio, biome geometry, characters, mobile HUD improvements, and a
-> desert mine set-piece vertical slice also exist on the active feature branch.
+> and tested. Audio, biome geometry, characters, mobile HUD improvements, and
+> deterministic desert-mine and glacier-ice-cave set-piece slices also exist on
+> the active feature branch.
 > **W10 — deploy and smoke-test on a phone/Safari — is not done.** B1 now has a
 > real foreground 720p measurement, but still needs its 1080p30/60, mid-laptop,
 > and SwiftShader measurements. This document stays as the strategy; it has not
@@ -682,11 +683,12 @@ and outer radii, chase-camera envelope, non-local track clearance, prop
 reservation, supports, and lights. The contract lives in renderer-free
 `client/scene/SetPieceLayout.ts`; Three.js only dresses the validated data.
 
-The reusable rule is now concrete: select and reserve before ordinary scenery,
-return no set piece when a grammar has no honest interval, and bound every
-interior object as well as the enclosing wall. The real foreground preview and
-encoded desert MP4 gate passed on `MINEVIEW16`; the glacier ice cave is the next
-vertical slice, followed by jungle ruins only after the same QA gate.
+The reusable rule is now concrete: select and reserve before ordinary scenery
+and spectators, return no set piece when a grammar has no honest interval, and
+bound every interior object as well as the enclosing wall. The real foreground
+preview and encoded desert MP4 gate passed on `MINEVIEW16`; the glacier reused
+the profile-driven selector and passed the same gate on `ICEVIEW5`, including a
+completed browser download. Jungle ruins are the next vertical slice.
 
 #### 3.2 Track families: ovals and F1 layouts
 

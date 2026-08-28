@@ -3,15 +3,15 @@
 **Read this first.** `PLAN.md` is the strategy and still accurate; this file is
 where the code actually is.
 
-> **Latest checkpoint: 2026-08-27.** The first intentional set piece — a seeded
-> desert mine with explicit portals, chute/camera envelope, non-local track
-> clearance, reserved dunes, wall-hugging ribs, and warm interior lights — is
-> built on `feature/desert-mine-tunnel`. Typecheck, **84/84 tests**, and the
-> production build pass. A full foreground race and an actual 720p30 H.264/AAC
-> export verified the approach, interior, exit, A/V alignment, and decoder path
-> after headless frames caught and fixed an occluding support design. Device QA
-> remains. Exact metrics, files, risks, and the restart point are in
-> `docs/CURRENT_WORK.md`.
+> **Latest checkpoint: 2026-08-27.** The intentional set-piece contract now also
+> carries a deterministic glacier ice cave with reserved ice shards and
+> spectators, wall-hugging ridges, cyan lights, and explicitly bounded icicles.
+> It is built on `feature/glacier-ice-cave`. Typecheck, **93/93 tests**, and the
+> production build pass. A full visible foreground race and a real completed
+> Edge download verified the approach, interior, exit, 720p30 H.264/AAC output,
+> A/V alignment, and decoder path after headless frames caught and fixed a seal
+> inside the cave. Device QA remains. Exact metrics, files, risks, and the
+> restart point are in `docs/CURRENT_WORK.md`.
 
 *Earlier baseline (2026-08-02): Stage 0 was built and pre-flight-checked; that
 session added **audio**, **characters**, and the **mobile/iPhone** fixes, and
@@ -21,8 +21,9 @@ solved the surface-world grading bug that had been open since 2026-08-01.
 ## Version control
 
 `github.com/CVilla90/canicarrera`, public. `main` contains the older published
-baseline; active work is on `feature/desert-mine-tunnel`. Commit `b4a31e8`
-preserves the complete pre-tunnel checkpoint before the mine implementation.
+baseline; active work is on `feature/glacier-ice-cave`, based on the pushed
+desert-mine checkpoint. Commit `b4a31e8` preserves the complete pre-tunnel
+checkpoint before the mine implementation.
 
 ⚠️ The stored `gh` tokens on this laptop are stale. Push over the personal SSH alias:
 `git@github-personal:CVilla90/canicarrera.git` (already set as `origin`). The
@@ -50,7 +51,7 @@ export an MP4.
 | Soundtrack | drop lands exactly on lights-out; **0** clipped samples; the MP4's audio decodes to **79.94 s** against **79.93 s** of video |
 | Surface worlds | the pale-wash bug is **fixed** — same pixel 192,187,137 → 46,96,24 |
 
-`npm test` is currently **84 checks** and takes a few seconds. Run it after touching
+`npm test` is currently **93 checks** and takes a few seconds. Run it after touching
 anything in `shared/`, `client/render/` or `client/audio/`.
 
 The newer foreground Edge probe measured **789.5 raster fps** and **83.9 pipeline
@@ -204,6 +205,31 @@ generated track and intentional geometry. The desert renderer consumes it in
   with audio verified that fix through the encoded output. This is why interior
   objects need bounds too — proving the wall clears the camera is necessary but
   not sufficient.
+
+### Glacier ice-cave set piece (added 2026-08-27)
+
+The second vertical slice reuses the candidate search in
+`client/scene/SetPieceLayout.ts` through a profile rather than copying the mine.
+It has its own cosmetic stream and a wider authored shell, while keeping the
+same grid/finish, chute, chase-camera, and non-local-track safety direction.
+
+- It prefers a 30 m straight, falls back no shorter than 14 m, declares a 7.35 m
+  interior, 9.5 m outer shell, and 5.5 m camera envelope, and returns `null`
+  when a future course has no honest interval.
+- Every crystalline ridge, glow, and icicle is serialisable contract data.
+  Icicles anchor to the straight set-piece axis and carry a measured bound that
+  stays at least 0.35 m outside the camera envelope.
+- Both mines and caves now reserve the shell plus approaches from spectators.
+  Character placement relocates to the nearest safe arc without consuming RNG,
+  or skips the character when no side fits.
+- 59 of 60 representative glacier tracks select a distinct deterministic cave;
+  the one compact helix that cannot clear the wider shell safely returns `null`.
+  All 7,080 requested ice shards remain, with zero reservation violations.
+- Headless frames for `ICEVIEW5` found a seal inside the first cave draft. The
+  spectator contract fixed it. A subsequent visible focused run captured five
+  real-time traversal frames, and Edge completed a 44,512,875-byte 720p30
+  H.264/AAC download. FFmpeg decoded it cleanly and encoded frames match the
+  preview without the HTML HUD.
 
 No physics or race-spec field changed. `SIM_VERSION` and `GENERATOR_VERSION`
 remain unchanged.
@@ -425,13 +451,11 @@ The wordmark also shrinks below `sm` — at 390 px the two used to overlap.
 
 ## Known issues
 
-1. **Capability probe vs. real throughput.** The first version timed
-   `encoder.flush()` inside the measured window, which made it ~15× pessimistic
-   (it promised 1 min 12 s for an export that took 5 s). Fixed: flush is now
-   outside the timing, there is a full-pipeline warm-up, and 30 frames are
-   timed. **This has not been re-verified in a foreground tab** — the probe now
-   refuses to run while `document.hidden`, so the automation harness cannot
-   measure it. Check the number on the button against the real export once.
+1. **Capability coverage is still partial.** The corrected probe has now run in
+   visible foreground Edge sessions and two real 720p30 exports completed in
+   roughly 13–14 seconds. B1 still lacks 1080p30/60, a mid-range laptop, and
+   SwiftShader, so do not generalise this machine's result into the whole
+   quality ladder.
 2. **Race ids do not survive a redeploy.** The registry is in memory
    (`MemoryRaceStore`). That is fine by design — a race is fully recoverable
    from its seed and share links use `?c=<seed>` — but `?r=<id>` links die.
@@ -447,10 +471,10 @@ The wordmark also shrinks below `sm` — at 390 px the two used to overlap.
    a desktop and in a 390 px iframe, not on the device that reported the
    problem. The one thing that would settle it is a sustained export on that
    iPhone with the memory budget in place.
-6. **The audio render has never been timed in a foreground tab.** 17 s for an
-   80-second race is the hidden-tab number and is almost certainly pessimistic,
-   but it is the number the export currently pays before the first frame is
-   drawn. Same loose end as B1, and one real export answers both.
+6. **Foreground audio is verified only on this desktop.** Two full 720p30
+   foreground exports with AAC now complete in roughly 13–14 seconds and decode
+   cleanly. A lower-power laptop and the target iPhone still need the sustained
+   export/memory check.
 
 ## Things that were subtly wrong and are worth not re-breaking
 
@@ -519,10 +543,12 @@ error — that is the failure mode to recognise.
 
 ## Next
 
-1. **Deploy** (W10) — still the only blocking step, and now the only way to get
-   the two measurements everything else is waiting on (a real foreground export,
-   and a real iPhone).
-   The rest of this list is unchanged from the previous session.
+1. **Jungle ruin vertical slice** — reuse the profile-driven set-piece selector,
+   reserve foliage and spectators first, and bound every arch, root, stone, and
+   vine against the chase-camera envelope. It must pass the same 60-track,
+   foreground, and encoded-MP4 gate as the mine and ice cave.
+2. **Deploy** (W10) — still the product-launch blocker and the only way to run
+   the real iPhone/Safari check against the intended hosting path.
    🔴 **Use a blank Repl + `git clone https://github.com/CVilla90/canicarrera.git`.
    Do NOT use "Import from GitHub"** — it restructures the repo before any agent
    reads a file, and nothing in-repo can prevent it.
@@ -530,18 +556,16 @@ error — that is the failure mode to recognise.
    carries build/run. `npm install` is deliberately *not* in the build command.
    Confirm the machine-power slider stops match PLAN §1.2 while you are in there
    (risk R2).
-2. **Smoke test on a phone and on Safari** — especially a sustained export, watching
+3. **Smoke test on a phone and on Safari** — especially a sustained export, watching
    memory (PLAN §R3b). ⚠️ Now more important than before: the presets add
    supersampled half-float buffers. `Alto` at 1080p allocates 2560x1440
    half-float targets, and a phone that survives `Ligero` may not survive that.
    `PostFX.isSupported` gates on the extension, **not on memory**.
-3. **B1 — re-check the export ETA against a real foreground export.** Now the
-   input to the entire quality ladder, not just a loose end. Telemetry already
-   records `predicted` next to the real elapsed time on every `export_finished`
-   event, so one real export answers it.
-4. Then Stage 1 **audio** (a silent race video is a weak YouTube upload), and
-   **billboards** — scene objects, not a DOM overlay, because the MP4 is what
-   gets shared and a CSS watermark never reaches it.
+4. **B1 — finish the matrix.** Foreground 720p is measured; 1080p30/60,
+   a mid-range laptop, and SwiftShader remain. Telemetry already records
+   `predicted` beside real elapsed time on every `export_finished` event.
+5. Then **billboards** — scene objects, not a DOM overlay, because the MP4 is
+   what gets shared and a CSS watermark never reaches it.
 
 ## Roadmap detail added 2026-07-27 (design only, nothing built)
 

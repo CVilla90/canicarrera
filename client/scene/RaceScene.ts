@@ -419,7 +419,9 @@ export class RaceScene {
     this.scene.add(this.world.group);
     // Keyed on the race seed, so the same link puts the same penguin on the
     // same rock — and on a cosmetic stream, so adding one cannot move a marble.
-    this.cast = buildCharacters(palette, this.track, spec.seed);
+    this.cast = buildCharacters(palette, this.track, spec.seed, {
+      exclusions: this.world.setPiece ? [this.world.setPiece.spectatorExclusion] : [],
+    });
     this.scene.add(this.cast.group);
     this.buildStars();
     this.buildTrackMesh();

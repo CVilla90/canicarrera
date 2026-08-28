@@ -94,16 +94,23 @@ When adding an ordinary prop kind, update its geometry footprint in
 has no clearance guarantee.
 
 Intentional crossings are different. `client/scene/SetPieceLayout.ts` is the
-renderer-free contract and its desert mine is the reference implementation:
+renderer-free contract. The desert mine is the reference selector and the
+glacier ice cave proves the same selector can safely carry different dressing:
 
 1. Search only declared straight segments, then validate actual sampled tangent,
    slope, grid/finish distance, and non-local track clearance.
-2. Define entrance, exit, axis, interior/outer radii, camera envelope, supports,
-   lighting, and prop exclusion as serialisable data before drawing anything.
+2. Define entrance, exit, axis, interior/outer radii, camera envelope, supports
+   or ridges, lighting, and prop exclusion as serialisable data before drawing
+   anything.
 3. Pass the exclusion into `buildPropLayout()` before ordinary props are placed.
-4. Keep every support, lamp, icicle, beam, and other interior object outside the
-   camera envelope too. Wall clearance alone does not prove an unobstructed shot.
-5. Build preview and export from the same static group and animate any future
+4. Keep every support, lamp, icicle, beam, vine, and other interior object
+   outside the camera envelope too. Wall clearance alone does not prove an
+   unobstructed shot. Store the measured margin in the pure contract when an
+   object reaches inward from the shell.
+5. Reserve the shell and its approaches from spectators as well as ordinary
+   scenery. Relocate a character deterministically without consuming new RNG;
+   skip it when neither adjacent safe arc fits.
+6. Build preview and export from the same static group and animate any future
    moving part from `sim.time`.
 
 The selector must return `null` rather than force a mine onto an unsafe future

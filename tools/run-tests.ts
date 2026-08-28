@@ -54,13 +54,25 @@ import {
   sampleTrackPlan,
 } from '../client/scene/WorldLayout.ts';
 import {
+  ICE_CAVE_FINISH_BUFFER,
+  ICE_CAVE_GRID_BUFFER,
+  ICE_CAVE_ICICLE_CAMERA_MARGIN,
+  ICE_CAVE_MAX_SLOPE,
+  ICE_CAVE_MAX_TANGENT_ANGLE,
+  ICE_CAVE_MIN_LENGTH,
   MINE_FINISH_BUFFER,
   MINE_GRID_BUFFER,
   MINE_MAX_SLOPE,
   MINE_MAX_TANGENT_ANGLE,
   MINE_TUNNEL_MIN_LENGTH,
   buildDesertMineTunnelLayout,
+  buildGlacierIceCaveLayout,
+  distanceToSetPieceAxis,
 } from '../client/scene/SetPieceLayout.ts';
+import {
+  clearsCharacterExclusions,
+  relocateCharacterArc,
+} from '../client/scene/Characters.ts';
 
 let failures = 0;
 let checks = 0;
@@ -325,7 +337,9 @@ section('Desert mine tunnel');
         first.supports.length >= 3 &&
         first.supports.every((support) => support.s > first.startS && support.s < first.endS) &&
         first.lamps.length >= 2 &&
-        first.propExclusion.points.length >= 3;
+        first.propExclusion.points.length >= 3 &&
+        first.spectatorExclusion.startS < first.startS &&
+        first.spectatorExclusion.endS > first.endS;
 
       const desert = PALETTES.desierto;
       const props = buildPropLayout(
@@ -385,6 +399,150 @@ section('Desert mine tunnel');
     `       ${selected} tunnels · ${placedProps} dunes · ` +
       `${(sparsestPropRatio * 100).toFixed(1)}% sparsest layout · ` +
       `${smallestPropMargin.toFixed(2)} m tightest exclusion margin`,
+  );
+}
+
+// ------------------------------------------------------------ glacier ice cave
+//
+// This is deliberately the same interval/camera/prop contract as the mine,
+// with one extra promise: every authored icicle cone stays outside the camera
+// envelope. Rendering a pretty spike first and measuring it later is exactly
+// the unsafe direction this module exists to prevent.
+section('Glacier ice cave');
+{
+  let selected = 0;
+  let deterministic = true;
+  let validInterval = true;
+  let validEnvelope = true;
+  let validDressing = true;
+  let propViolations = 0;
+  let wantedProps = 0;
+  let placedProps = 0;
+  let sparsestPropRatio = 1;
+  let smallestPropMargin = Infinity;
+  let smallestIcicleClearance = Infinity;
+  const fingerprints = new Set<string>();
+
+  for (const archetype of ARCHETYPE_NAMES) {
+    for (let i = 0; i < 12; i++) {
+      const seed = `ICE_CAVE_${archetype}_${i}`;
+      const spec = generateSpec(seed, { archetype, palette: 'glaciar' });
+      const track = buildTrack(spec.track);
+      const first = buildGlacierIceCaveLayout(track, seed);
+      const second = buildGlacierIceCaveLayout(track, seed);
+      if (JSON.stringify(first) !== JSON.stringify(second)) deterministic = false;
+      if (!first) continue;
+
+      selected++;
+      fingerprints.add(JSON.stringify(first));
+      validInterval &&=
+        first.startS >= ICE_CAVE_GRID_BUFFER - 1e-9 &&
+        first.endS <= track.finishS - ICE_CAVE_FINISH_BUFFER + 1e-9 &&
+        first.length >= ICE_CAVE_MIN_LENGTH - 1e-9 &&
+        first.metrics.minTangentDot >= Math.cos(ICE_CAVE_MAX_TANGENT_ANGLE) - 1e-9 &&
+        first.metrics.maxSlope <= ICE_CAVE_MAX_SLOPE + 1e-9;
+      validEnvelope &&=
+        first.metrics.maxTrackAxisOffset + track.tubeRadius < first.interiorRadius &&
+        first.metrics.maxCameraAxisOffset <= first.cameraEnvelopeRadius + 1e-9 &&
+        first.cameraEnvelopeRadius < first.interiorRadius &&
+        first.metrics.nearestOtherTrack >= first.outerRadius + track.tubeRadius;
+
+      for (const icicle of first.icicles) {
+        const measuredClearance =
+          distanceToSetPieceAxis(icicle.tip, first.entrance.p, first.axis) -
+          icicle.radius -
+          first.cameraEnvelopeRadius;
+        smallestIcicleClearance = Math.min(smallestIcicleClearance, measuredClearance);
+        validDressing &&=
+          icicle.s > first.startS &&
+          icicle.s < first.endS &&
+          icicle.radius > 0 &&
+          icicle.length > 0 &&
+          Math.abs(icicle.cameraClearance - measuredClearance) < 1e-9 &&
+          measuredClearance >= ICE_CAVE_ICICLE_CAMERA_MARGIN - 1e-9;
+      }
+      validDressing &&=
+        first.ridges.length >= 3 &&
+        first.ridges.every((ridge) => ridge.s > first.startS && ridge.s < first.endS) &&
+        first.icicles.length >= 4 &&
+        first.glows.length >= 2 &&
+        first.propExclusion.points.length >= 3 &&
+        first.spectatorExclusion.startS < first.startS &&
+        first.spectatorExclusion.endS > first.endS &&
+        [first.startS, (first.startS + first.endS) * 0.5, first.endS].every((s) => {
+          const relocated = relocateCharacterArc(s, track.finishS, [first.spectatorExclusion]);
+          return (
+            relocated !== null &&
+            clearsCharacterExclusions(relocated, [first.spectatorExclusion])
+          );
+        });
+
+      const glacier = PALETTES.glaciar;
+      const props = buildPropLayout(
+        glacier,
+        track,
+        seed,
+        (x, z) => -11 + Math.sin(x * 0.03) * 2 + Math.cos(z * 0.025) * 1.5,
+        { exclusions: [first.propExclusion] },
+      );
+      wantedProps += glacier.propCount;
+      placedProps += props.length;
+      sparsestPropRatio = Math.min(sparsestPropRatio, props.length / glacier.propCount);
+      for (const prop of props) {
+        const margin =
+          distanceToTrackPlan(prop.x, prop.z, first.propExclusion.points) -
+          (first.propExclusion.radius + prop.radius);
+        smallestPropMargin = Math.min(smallestPropMargin, margin);
+        if (!clearsPropExclusions(prop.x, prop.z, prop.radius, [first.propExclusion])) {
+          propViolations++;
+        }
+      }
+    }
+  }
+
+  const sampleCount = ARCHETYPE_NAMES.length * 12;
+  check(
+    `glacier caves cover at least 95% of generated courses (${sampleCount} tracks)`,
+    selected >= sampleCount * 0.95,
+    `${selected}/${sampleCount} selected`,
+  );
+  check('same race -> byte-identical ice-cave contract', deterministic);
+  check(
+    'different races produce different ice-cave contracts',
+    fingerprints.size === selected,
+    `${fingerprints.size} distinct layouts`,
+  );
+  check('ice-cave intervals are straight and clear of grid/finish', validInterval);
+  check('chute, chase camera and non-local track clear the ice shell', validEnvelope);
+  check(
+    'ridges, glows and every icicle respect the authored camera envelope',
+    validDressing,
+    `${smallestIcicleClearance.toFixed(3)} m tightest icicle clearance`,
+  );
+  check(
+    'reserved cave corridors retain the glacier scenery density',
+    placedProps >= wantedProps * 0.99 && sparsestPropRatio >= 0.9,
+    `${placedProps}/${wantedProps} placed, ${(sparsestPropRatio * 100).toFixed(1)}% sparsest`,
+  );
+  check(
+    'no ordinary ice shard enters a cave or portal approach',
+    propViolations === 0 && smallestPropMargin >= TRACK_PLAN_SAFETY_MARGIN - 1e-9,
+    `${propViolations} violations, ${smallestPropMargin.toFixed(3)} m margin`,
+  );
+
+  const outcomeSeed = 'ICE_CAVE_OUTCOME';
+  const outcomeBefore = fingerprint(outcomeSeed);
+  const outcomeSpec = generateSpec(outcomeSeed, { palette: 'glaciar' });
+  buildGlacierIceCaveLayout(buildTrack(outcomeSpec.track), outcomeSeed);
+  check(
+    'ice-cave selection cannot change the race outcome',
+    fingerprint(outcomeSeed) === outcomeBefore,
+  );
+  console.log(
+    `       ${selected} caves · ${placedProps} ice shards · ` +
+      `${(sparsestPropRatio * 100).toFixed(1)}% sparsest layout · ` +
+      `${smallestPropMargin.toFixed(2)} m prop margin · ` +
+      `${smallestIcicleClearance.toFixed(2)} m icicle margin`,
   );
 }
 
