@@ -64,6 +64,49 @@ export const INTRO_BARS = 2;
 /** Video time at which the bar grid begins. */
 export const BAR_ZERO = COUNTDOWN - INTRO_BARS * BAR;
 
+export const MUSIC_GENRES = ['dnb', 'kids', 'rock'] as const;
+export type MusicGenre = (typeof MUSIC_GENRES)[number];
+export const DEFAULT_MUSIC_GENRE: MusicGenre = 'dnb';
+
+/** Resolve the setup panel's Random choice without touching simulation RNG. */
+export function musicGenreForSeed(seed: string): MusicGenre {
+  return stream(seed, `${COSMETIC.music}:genre-choice`).pick(MUSIC_GENRES);
+}
+
+export interface MusicGrid {
+  bpm: number;
+  beat: number;
+  bar: number;
+  step: number;
+  introBars: number;
+  barZero: number;
+}
+
+const GENRE_TEMPO: Record<MusicGenre, { bpm: number; introBars: number }> = {
+  dnb: { bpm: BPM, introBars: INTRO_BARS },
+  kids: { bpm: 132, introBars: 1 },
+  rock: { bpm: 148, introBars: 1 },
+};
+
+export function isMusicGenre(value: unknown): value is MusicGenre {
+  return typeof value === 'string' && MUSIC_GENRES.some((genre) => genre === value);
+}
+
+/** The score grid for a genre, anchored so its main section starts at lights-out. */
+export function musicGrid(genre: MusicGenre): MusicGrid {
+  const profile = GENRE_TEMPO[genre];
+  const beat = 60 / profile.bpm;
+  const bar = beat * 4;
+  return {
+    bpm: profile.bpm,
+    beat,
+    bar,
+    step: bar / 16,
+    introBars: profile.introBars,
+    barZero: COUNTDOWN - profile.introBars * bar,
+  };
+}
+
 // ---------------------------------------------------------------- music
 
 export type Voice =
@@ -75,6 +118,10 @@ export type Voice =
   | 'sub'
   | 'reese'
   | 'stab'
+  | 'bell'
+  | 'pluck'
+  | 'guitar'
+  | 'bassGuitar'
   | 'riser'
   | 'impact';
 
@@ -159,14 +206,17 @@ export const sfxSeconds = (kind: SfxKind): number => {
 
 // ---------------------------------------------------------------- score
 
-export interface CrowdPoint {
+export interface CrowdSwell {
   t: number;
-  /** 0-1. Drives the ambient crowd bed, and nothing else. */
+  /** Seconds. Crowd noise is never allowed to become a continuous bed. */
+  dur: number;
+  /** 0-1. */
   level: number;
 }
 
 export interface Score {
   seed: string;
+  genre: MusicGenre;
   /** Seconds. Always exactly the video's duration. */
   duration: number;
   bpm: number;
@@ -174,7 +224,7 @@ export interface Score {
   dropAt: number;
   music: MusicNote[];
   sfx: SfxHit[];
-  crowd: CrowdPoint[];
+  crowd: CrowdSwell[];
 }
 
 /**
@@ -213,6 +263,8 @@ export interface ScoreOptions {
    * the spec's seed, which is what makes a shared link sound identical.
    */
   seed?: string;
+  /** Explicit user choice. Defaults to drum and bass for saved-setting compatibility. */
+  genre?: MusicGenre;
 }
 
 /**
@@ -228,18 +280,20 @@ export function buildScore(
   options: ScoreOptions = {},
 ): Score {
   const seed = options.seed ?? spec.seed;
-  const rng = stream(seed, COSMETIC.music);
+  const genre = options.genre ?? DEFAULT_MUSIC_GENRE;
+  const grid = musicGrid(genre);
+  const rng = stream(seed, `${COSMETIC.music}:${genre}`);
   const duration = summary.videoDuration;
   const dropAt = COUNTDOWN;
 
   const tension = tensionLookup(summary.tension, summary.endTime);
-  const energies = planEnergy(summary.endTime, duration, tension, rng);
+  const energies = planEnergy(summary.endTime, duration, tension, rng, grid);
 
-  const music = arrange(energies, rng, summary.endTime);
+  const music = arrange(genre, energies, rng, summary.endTime, grid);
   const sfx = soundEffects(spec, summary.events, duration);
   const crowd = crowdBed(summary.tension, summary.events, duration);
 
-  return { seed, duration, bpm: BPM, dropAt, music, sfx, crowd };
+  return { seed, genre, duration, bpm: grid.bpm, dropAt, music, sfx, crowd };
 }
 
 // ---------------------------------------------------------------- arrangement
@@ -280,16 +334,17 @@ function planEnergy(
   duration: number,
   tension: (t: number) => number,
   rng: Rng,
+  grid: MusicGrid,
 ): Energy[] {
-  const bars = Math.max(INTRO_BARS + 1, Math.ceil((duration - BAR_ZERO) / BAR));
-  const finishBar = (endTime - BAR_ZERO) / BAR;
+  const bars = Math.max(grid.introBars + 1, Math.ceil((duration - grid.barZero) / grid.bar));
+  const finishBar = (endTime - grid.barZero) / grid.bar;
   // A phrase offset drawn from the seed, so two races of the same length do not
   // put the breakdown in the same place.
   const offset = rng.int(4) * 4;
 
   const energies: Energy[] = [];
   for (let bar = 0; bar < bars; bar++) {
-    if (bar < INTRO_BARS) {
+    if (bar < grid.introBars) {
       energies.push(0);
       continue;
     }
@@ -299,10 +354,10 @@ function planEnergy(
       continue;
     }
 
-    const phase = (bar - INTRO_BARS + offset) % 16;
+    const phase = (bar - grid.introBars + offset) % 16;
     let energy: Energy = phase < 8 ? 3 : phase < 12 ? 1 : 2;
 
-    const level = tension(BAR_ZERO + (bar + 0.5) * BAR);
+    const level = tension(grid.barZero + (bar + 0.5) * grid.bar);
     if (level > 0.66) energy = 3;
     else if (level < 0.34 && energy === 3) energy = 2;
     // The run-in is always full: the finish is the loudest thing in the race.
@@ -318,23 +373,39 @@ function push(notes: MusicNote[], note: MusicNote): void {
   if (notes.length < MAX_NOTES) notes.push(note);
 }
 
-/**
- * Lays the notes down bar by bar.
- *
- * The percussion is the classic two-step: kick on the first sixteenth and the
- * eleventh, snare on the fifth and thirteenth. That single pattern is what makes
- * 174 BPM feel like ~87 to the listener, which is why drum and bass can be this
- * fast and still sit under something without exhausting anyone.
- */
-function arrange(energies: Energy[], rng: Rng, endTime: number): MusicNote[] {
+/** Routes the shared race-energy plan into the selected genre vocabulary. */
+function arrange(
+  genre: MusicGenre,
+  energies: Energy[],
+  rng: Rng,
+  endTime: number,
+  grid: MusicGrid,
+): MusicNote[] {
+  switch (genre) {
+    case 'kids':
+      return arrangeKids(energies, rng, endTime, grid);
+    case 'rock':
+      return arrangeRock(energies, rng, endTime, grid);
+    case 'dnb':
+      return arrangeDnb(energies, rng, endTime, grid);
+  }
+}
+
+/** Classic two-step DnB, with its kick/snare grid and rolling half-time feel. */
+function arrangeDnb(
+  energies: Energy[],
+  rng: Rng,
+  endTime: number,
+  grid: MusicGrid,
+): MusicNote[] {
   const notes: MusicNote[] = [];
   const root = rng.pick(ROOTS);
 
   for (let bar = 0; bar < energies.length; bar++) {
-    const barStart = BAR_ZERO + bar * BAR;
+    const barStart = grid.barZero + bar * grid.bar;
     const energy = energies[bar];
     const chord = PROGRESSION[Math.floor(bar / 2) % PROGRESSION.length];
-    const at = (step: number): number => barStart + step * STEP;
+    const at = (step: number): number => barStart + step * grid.step;
     const last = bar === energies.length - 1;
 
     if (energy === 0) {
@@ -349,10 +420,10 @@ function arrange(energies: Energy[], rng: Rng, endTime: number): MusicNote[] {
           voice: 'riser',
           note: root + 12,
           gain: 0.34,
-          dur: INTRO_BARS * BAR,
+          dur: grid.introBars * grid.bar,
         });
       }
-      if (bar === INTRO_BARS - 1) {
+      if (bar === grid.introBars - 1) {
         push(notes, { t: at(12), voice: 'snare', note: 0, gain: 0.4, dur: 0.2 });
         push(notes, { t: at(14), voice: 'snare', note: 0, gain: 0.55, dur: 0.2 });
       }
@@ -400,13 +471,13 @@ function arrange(energies: Energy[], rng: Rng, endTime: number): MusicNote[] {
     // ---- bass
     const bassNote = root + chord - 12;
     if (energy >= 2) {
-      push(notes, { t: barStart, voice: 'sub', note: bassNote, gain: 0.85, dur: STEP * 9 });
-      push(notes, { t: at(10), voice: 'sub', note: bassNote, gain: 0.75, dur: STEP * 5 });
+      push(notes, { t: barStart, voice: 'sub', note: bassNote, gain: 0.85, dur: grid.step * 9 });
+      push(notes, { t: at(10), voice: 'sub', note: bassNote, gain: 0.75, dur: grid.step * 5 });
     } else {
-      push(notes, { t: barStart, voice: 'sub', note: bassNote, gain: 0.6, dur: BAR * 0.9 });
+      push(notes, { t: barStart, voice: 'sub', note: bassNote, gain: 0.6, dur: grid.bar * 0.9 });
     }
     if (energy === 3) {
-      push(notes, { t: barStart, voice: 'reese', note: bassNote + 12, gain: 0.34, dur: BAR });
+      push(notes, { t: barStart, voice: 'reese', note: bassNote + 12, gain: 0.34, dur: grid.bar });
     }
 
     // ---- chords
@@ -423,18 +494,181 @@ function arrange(energies: Energy[], rng: Rng, endTime: number): MusicNote[] {
           voice: 'stab',
           note: root + chord + interval + 12,
           gain: 0.16,
-          dur: STEP * 3,
+          dur: grid.step * 3,
         });
       }
     }
 
     // A riser into the next drop, so the return is announced rather than abrupt.
     if (!last && energy < 3 && energies[bar + 1] === 3) {
-      push(notes, { t: barStart, voice: 'riser', note: root + 12, gain: 0.28, dur: BAR });
+      push(notes, { t: barStart, voice: 'riser', note: root + 12, gain: 0.28, dur: grid.bar });
     }
   }
 
   // Nothing after the flag but the tail of what is already ringing.
+  return notes.filter((note) => note.t < endTime + 2.2);
+}
+
+const KIDS_ROOTS = [60, 62, 65, 67];
+const KIDS_PROGRESSION = [0, 5, 7, 0];
+const KIDS_SCALE = [0, 2, 4, 7, 9];
+
+/** Bright, melodic and deliberately sparse: toy-box colour without shrillness. */
+function arrangeKids(
+  energies: Energy[],
+  rng: Rng,
+  endTime: number,
+  grid: MusicGrid,
+): MusicNote[] {
+  const notes: MusicNote[] = [];
+  const root = rng.pick(KIDS_ROOTS);
+  const motifOffset = rng.int(KIDS_SCALE.length);
+
+  for (let bar = 0; bar < energies.length; bar++) {
+    const barStart = grid.barZero + bar * grid.bar;
+    const energy = energies[bar];
+    const chord = KIDS_PROGRESSION[Math.floor(bar / 2) % KIDS_PROGRESSION.length];
+    const at = (step: number): number => barStart + step * grid.step;
+
+    if (energy === 0) {
+      for (const [index, step] of [0, 5, 10].entries()) {
+        push(notes, {
+          t: at(step),
+          voice: 'bell',
+          note: root + KIDS_SCALE[(motifOffset + index) % KIDS_SCALE.length],
+          gain: 0.22,
+          dur: grid.step * 3,
+        });
+      }
+      continue;
+    }
+
+    // A simple marching pulse leaves room for the melody and avoids a wall of hats.
+    if (energy >= 2) {
+      for (const step of [0, 8]) {
+        push(notes, { t: at(step), voice: 'kick', note: 0, gain: 0.55, dur: 0.24 });
+      }
+      for (const step of [4, 12]) {
+        push(notes, { t: at(step), voice: 'snare', note: 0, gain: 0.42, dur: 0.18 });
+      }
+    } else {
+      push(notes, { t: at(8), voice: 'kick', note: 0, gain: 0.35, dur: 0.2 });
+      push(notes, { t: at(12), voice: 'snare', note: 0, gain: 0.3, dur: 0.16 });
+    }
+
+    for (const step of [2, 6, 10, 14]) {
+      push(notes, { t: at(step), voice: 'hat', note: 0, gain: 0.08, dur: 0.04 });
+    }
+
+    push(notes, {
+      t: barStart,
+      voice: 'pluck',
+      note: root + chord - 12,
+      gain: 0.42,
+      dur: grid.step * 7,
+    });
+    push(notes, {
+      t: at(8),
+      voice: 'pluck',
+      note: root + chord - 12,
+      gain: 0.36,
+      dur: grid.step * 6,
+    });
+
+    const melodySteps = energy === 3 ? [1, 4, 7, 10, 13] : [2, 6, 10, 14];
+    for (let i = 0; i < melodySteps.length; i++) {
+      const direction = bar % 2 === 0 ? i : melodySteps.length - 1 - i;
+      const scale = KIDS_SCALE[(motifOffset + direction + bar) % KIDS_SCALE.length];
+      push(notes, {
+        t: at(melodySteps[i]),
+        voice: i % 2 === 0 ? 'bell' : 'pluck',
+        note: root + chord + scale + 12,
+        gain: energy === 3 ? 0.27 : 0.21,
+        dur: grid.step * (i % 2 === 0 ? 2.5 : 1.7),
+      });
+    }
+  }
+
+  return notes.filter((note) => note.t < endTime + 2.2);
+}
+
+const ROCK_ROOTS = [40, 41, 43, 45];
+const ROCK_PROGRESSION = [0, 3, 8, 10];
+
+/** Driving live-band profile: drums, picked bass and short filtered power chords. */
+function arrangeRock(
+  energies: Energy[],
+  rng: Rng,
+  endTime: number,
+  grid: MusicGrid,
+): MusicNote[] {
+  const notes: MusicNote[] = [];
+  const root = rng.pick(ROCK_ROOTS);
+
+  for (let bar = 0; bar < energies.length; bar++) {
+    const barStart = grid.barZero + bar * grid.bar;
+    const energy = energies[bar];
+    const chord = ROCK_PROGRESSION[Math.floor(bar / 2) % ROCK_PROGRESSION.length];
+    const at = (step: number): number => barStart + step * grid.step;
+
+    if (energy === 0) {
+      for (const step of [0, 4, 8, 12]) {
+        push(notes, {
+          t: at(step),
+          voice: 'guitar',
+          note: root + chord + 12,
+          gain: step === 0 ? 0.28 : 0.2,
+          dur: grid.step * 2.5,
+        });
+      }
+      continue;
+    }
+
+    const kickSteps = energy === 3 ? [0, 6, 8, 10] : [0, 8];
+    for (const step of kickSteps) {
+      push(notes, { t: at(step), voice: 'kick', note: 0, gain: 0.75, dur: 0.28 });
+    }
+    for (const step of [4, 12]) {
+      push(notes, { t: at(step), voice: 'snare', note: 0, gain: 0.72, dur: 0.2 });
+    }
+    for (let step = 0; step < 16; step += 2) {
+      push(notes, {
+        t: at(step),
+        voice: step === 14 && energy === 1 ? 'ride' : 'hat',
+        note: 0,
+        gain: step % 4 === 0 ? 0.18 : 0.12,
+        dur: 0.05,
+      });
+    }
+
+    for (const step of [0, 4, 8, 12]) {
+      push(notes, {
+        t: at(step),
+        voice: 'bassGuitar',
+        note: root + chord - 12,
+        gain: energy === 3 ? 0.58 : 0.45,
+        dur: grid.step * 3.4,
+      });
+    }
+
+    const chordSteps = energy === 3 ? [0, 6, 8, 14] : [0, 8];
+    for (const step of chordSteps) {
+      for (const interval of [0, 7, 12]) {
+        push(notes, {
+          t: at(step),
+          voice: 'guitar',
+          note: root + chord + interval + 12,
+          gain: interval === 0 ? 0.28 : 0.19,
+          dur: grid.step * (energy === 3 ? 2.5 : 5.5),
+        });
+      }
+    }
+
+    if (energy === 3 && rng.chance(0.35)) {
+      push(notes, { t: at(15), voice: 'ghost', note: 0, gain: 0.3, dur: 0.08 });
+    }
+  }
+
   return notes.filter((note) => note.t < endTime + 2.2);
 }
 
@@ -506,37 +740,50 @@ function soundEffects(spec: RaceSpec, events: SimEvent[], duration: number): Sfx
 }
 
 /**
- * The ambient crowd, as a level curve.
+ * Finite crowd swells with real silence between them.
  *
- * One continuous bed rather than a bank of one-shots: a crowd is a *state*, not
- * an event. It rises when the front two are fighting, peaks at the flag, and
- * settles under the podium. The one-shot cheers in `soundEffects` then sit on
- * top of it, which is how a real crowd sounds — a swell you stop noticing, with
- * reactions cutting through it.
+ * The old implementation kept one broadband-noise loop audible for the entire
+ * race. Even at low gain that becomes a tiring static floor. A crowd now enters
+ * only for lights-out, sufficiently tense battles, and the finish; every source
+ * has a bounded envelope and stops before the next one begins.
  */
-function crowdBed(tension: TensionSample[], events: SimEvent[], duration: number): CrowdPoint[] {
-  const points: CrowdPoint[] = [{ t: 0, level: 0.12 }];
-  const finish = events.find((event) => event.kind === 'finish' && event.place === 1);
+function crowdBed(tension: TensionSample[], events: SimEvent[], duration: number): CrowdSwell[] {
+  const swells: CrowdSwell[] = [];
+  const minimumRest = 0.8;
+  let availableAt = 0;
 
-  // A hush over the last second of the countdown, so lights-out has somewhere
-  // to come from. Silence is the cheapest dynamic range there is.
-  points.push({ t: COUNTDOWN - 0.9, level: 0.05 });
-  points.push({ t: COUNTDOWN, level: 0.55 });
+  const add = (t: number, dur: number, level: number): void => {
+    const start = Math.max(0, t);
+    const boundedDuration = Math.min(dur, duration - start - 0.05);
+    if (boundedDuration < 0.35 || start < availableAt) return;
+    swells.push({ t: start, dur: boundedDuration, level: clamp(level, 0, 1) });
+    availableAt = start + boundedDuration + minimumRest;
+  };
 
-  // Downsampled to ~2 Hz: the bed is a slow swell and 5 Hz would just be more
-  // automation points describing the same shape.
-  for (let i = 0; i < tension.length; i += 2) {
+  add(COUNTDOWN, 1.25, 0.5);
+
+  // Tension is sampled at 5 Hz. Inspect every fifth sample and require a real
+  // threshold so a quiet race is allowed to stay quiet.
+  for (let i = 0; i < tension.length; i += 5) {
     const sample = tension[i];
-    if (sample.t <= COUNTDOWN || sample.t >= duration) continue;
-    points.push({ t: sample.t, level: clamp(0.16 + sample.level * 0.62, 0, 1) });
+    if (sample.t <= COUNTDOWN || sample.level < 0.38) continue;
+    add(sample.t, 0.85 + sample.level * 1.35, 0.24 + sample.level * 0.55);
   }
 
+  const finish = events.find((event) => event.kind === 'finish' && event.place === 1);
   if (finish) {
-    points.push({ t: finish.t, level: 1 });
-    if (finish.t + 2.5 < duration) points.push({ t: finish.t + 2.5, level: 0.62 });
+    // The finish owns its space. Remove a battle swell that would blur into it,
+    // then leave the final celebration enough outro to decay completely.
+    while (swells.length > 0) {
+      const previous = swells[swells.length - 1];
+      if (previous.t + previous.dur + minimumRest <= finish.t) break;
+      swells.pop();
+    }
+    availableAt = swells.length === 0
+      ? 0
+      : swells[swells.length - 1].t + swells[swells.length - 1].dur + minimumRest;
+    add(finish.t, 2.7, 1);
   }
-  points.push({ t: Math.max(0, duration - 0.6), level: 0 });
 
-  points.sort((a, b) => a.t - b.t);
-  return points;
+  return swells;
 }

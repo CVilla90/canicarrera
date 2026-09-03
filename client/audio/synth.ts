@@ -23,7 +23,7 @@
  */
 import {
   SFX_SHAPES,
-  type CrowdPoint,
+  type CrowdSwell,
   type MusicNote,
   type Score,
   type SfxHit,
@@ -512,6 +512,97 @@ function playNote(ctx: BaseAudioContext, buses: AudioBuses, note: MusicNote, at:
       osc.stop(end + 0.02);
       break;
     }
+    case 'bell': {
+      const duration = Math.min(note.dur, 0.9);
+      const attack = Math.min(0.006, duration * 0.2);
+      const end = hit(out, at, note.gain * 0.42, attack, Math.max(0.001, duration - attack));
+      for (const [ratio, level] of [
+        [1, 1],
+        [2, 0.24],
+        [3, 0.08],
+      ] as const) {
+        const osc = ctx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.value = hz(note.note) * ratio;
+        const partial = ctx.createGain();
+        partial.gain.value = level;
+        osc.connect(partial);
+        partial.connect(out);
+        osc.start(at);
+        osc.stop(end + 0.02);
+      }
+      break;
+    }
+    case 'pluck': {
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(2600, at);
+      filter.frequency.exponentialRampToValueAtTime(720, at + note.dur);
+      filter.Q.value = 0.7;
+      filter.connect(out);
+      const osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.value = hz(note.note);
+      osc.connect(filter);
+      const attack = Math.min(0.008, note.dur * 0.2);
+      const end = hit(out, at, note.gain * 0.48, attack, Math.max(0.001, note.dur - attack));
+      osc.start(at);
+      osc.stop(end + 0.02);
+      break;
+    }
+    case 'guitar': {
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(3200, at);
+      filter.frequency.exponentialRampToValueAtTime(1050, at + note.dur);
+      filter.Q.value = 1.6;
+      filter.connect(out);
+      const osc = ctx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.value = hz(note.note);
+      osc.detune.value = note.note % 2 === 0 ? -4 : 4;
+      osc.connect(filter);
+      const end = at + note.dur;
+      const attackEnd = Math.min(end, at + 0.008);
+      const releaseStart = Math.max(attackEnd, end - Math.min(0.07, note.dur * 0.35));
+      out.gain.setValueAtTime(0.0001, at);
+      out.gain.exponentialRampToValueAtTime(Math.max(note.gain * 0.3, 0.0002), attackEnd);
+      out.gain.setValueAtTime(Math.max(note.gain * 0.22, 0.0002), releaseStart);
+      out.gain.exponentialRampToValueAtTime(0.0001, end);
+      const send = ctx.createGain();
+      send.gain.value = 0.12;
+      out.connect(send);
+      send.connect(buses.reverbSend);
+      osc.start(at);
+      osc.stop(end + 0.02);
+      break;
+    }
+    case 'bassGuitar': {
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(1200, at);
+      filter.frequency.exponentialRampToValueAtTime(420, at + note.dur);
+      filter.Q.value = 0.9;
+      filter.connect(out);
+      const osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.value = hz(note.note);
+      osc.connect(filter);
+      const octave = ctx.createOscillator();
+      octave.type = 'sine';
+      octave.frequency.value = hz(note.note + 12);
+      const octaveGain = ctx.createGain();
+      octaveGain.gain.value = 0.14;
+      octave.connect(octaveGain);
+      octaveGain.connect(filter);
+      const attack = Math.min(0.009, note.dur * 0.2);
+      const end = hit(out, at, note.gain * 0.5, attack, Math.max(0.001, note.dur - attack));
+      osc.start(at);
+      octave.start(at);
+      osc.stop(end + 0.02);
+      octave.stop(end + 0.02);
+      break;
+    }
     case 'riser': {
       const band = ctx.createBiquadFilter();
       band.type = 'bandpass';
@@ -751,58 +842,71 @@ function playSfx(ctx: BaseAudioContext, buses: AudioBuses, hitEvent: SfxHit, at:
 // ---------------------------------------------------------------- crowd bed
 
 /**
- * The ambient crowd: one looping noise source with an automated gain and a
- * filter that opens as the level rises.
+ * The ambient crowd: short, individually stopped noise swells with filters that
+ * open as the level rises. The gaps between them are literal silence.
  *
- * Scheduled in one go rather than in windows, because it is a single node whose
- * whole life is described by a few hundred automation points. Returns a stop
- * handle so live playback can tear it down on restart.
+ * Scheduled in one go rather than in windows because there are only a handful
+ * per race. Returns every stop handle so live playback can tear them down on
+ * restart or a genre change.
  */
 export function scheduleCrowd(
   ctx: BaseAudioContext,
   buses: AudioBuses,
-  points: CrowdPoint[],
+  swells: CrowdSwell[],
   t0: number,
   duration: number,
-): AudioBufferSourceNode | null {
-  if (points.length === 0) return null;
+): AudioBufferSourceNode[] {
+  const sources: AudioBufferSourceNode[] = [];
 
-  const source = ctx.createBufferSource();
-  source.buffer = buses.noise;
-  source.loop = true;
+  for (const swell of swells) {
+    const at = t0 + swell.t;
+    const end = Math.min(at + swell.dur, t0 + duration);
+    if (end <= ctx.currentTime || end - at < 0.2) continue;
 
-  const band = ctx.createBiquadFilter();
-  band.type = 'bandpass';
-  band.frequency.value = 620;
-  band.Q.value = 0.45;
+    const source = ctx.createBufferSource();
+    source.buffer = buses.noise;
+    source.loop = true;
+    source.loopStart = 0;
+    source.loopEnd = buses.noise.duration;
 
-  // A second, higher band mixed in at low level. One band is wind; two bands
-  // with different centres start to sound like a lot of people.
-  const upper = ctx.createBiquadFilter();
-  upper.type = 'bandpass';
-  upper.frequency.value = 1900;
-  upper.Q.value = 0.8;
-  const upperGain = ctx.createGain();
-  upperGain.gain.value = 0.3;
+    const band = ctx.createBiquadFilter();
+    band.type = 'bandpass';
+    band.frequency.value = 620 + swell.level * 250 + (Math.floor(swell.t * 10) % 5) * 24;
+    band.Q.value = 0.5;
 
-  const out = ctx.createGain();
-  source.connect(band);
-  band.connect(out);
-  source.connect(upper);
-  upper.connect(upperGain);
-  upperGain.connect(out);
-  out.connect(buses.crowd);
+    const upper = ctx.createBiquadFilter();
+    upper.type = 'bandpass';
+    upper.frequency.value = 1650 + swell.level * 520;
+    upper.Q.value = 0.9;
+    const upperGain = ctx.createGain();
+    upperGain.gain.value = 0.24;
 
-  out.gain.setValueAtTime(0.0001, Math.max(t0, 0));
-  for (const point of points) {
-    const when = Math.max(t0 + point.t, 0);
-    out.gain.linearRampToValueAtTime(Math.max(point.level * 0.2, 0.0001), when);
-    band.frequency.linearRampToValueAtTime(560 + point.level * 420, when);
+    const out = ctx.createGain();
+    source.connect(band);
+    band.connect(out);
+    source.connect(upper);
+    upper.connect(upperGain);
+    upperGain.connect(out);
+    out.connect(buses.crowd);
+
+    const start = Math.max(at, ctx.currentTime);
+    const audibleDuration = end - start;
+    const attack = Math.min(0.32, audibleDuration * 0.3);
+    const release = Math.min(0.55, audibleDuration * 0.4);
+    const releaseAt = Math.max(start + attack, end - release);
+    const peak = Math.max(swell.level * 0.18, 0.0002);
+    out.gain.setValueAtTime(0.0001, start);
+    out.gain.exponentialRampToValueAtTime(peak, start + attack);
+    out.gain.setValueAtTime(peak * 0.86, releaseAt);
+    out.gain.exponentialRampToValueAtTime(0.0001, end);
+
+    const offset = (Math.abs(swell.t) * 7.13) % buses.noise.duration;
+    source.start(start, offset);
+    source.stop(end + 0.02);
+    sources.push(source);
   }
 
-  source.start(Math.max(t0, 0));
-  source.stop(Math.max(t0 + duration, 0) + 0.05);
-  return source;
+  return sources;
 }
 
 // ---------------------------------------------------------------- scheduling

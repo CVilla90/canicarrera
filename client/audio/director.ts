@@ -19,7 +19,12 @@
  * The whole score is precomputed, which is what makes the anchor trivial: one
  * `t0` mapping score time to context time, established when playback starts.
  */
-import type { Score } from '@shared/audio/score.ts';
+import {
+  DEFAULT_MUSIC_GENRE,
+  isMusicGenre,
+  type MusicGenre,
+  type Score,
+} from '@shared/audio/score.ts';
 import {
   applyMix,
   createBuses,
@@ -40,9 +45,15 @@ const START_LATENCY = 0.08;
 export interface AudioSettings extends Mix {
   /** Master switch. When false no context is created at all. */
   enabled: boolean;
+  /** Deterministic arrangement and synthesis profile. */
+  genre: MusicGenre;
 }
 
-export const DEFAULT_SETTINGS: AudioSettings = { enabled: false, ...DEFAULT_MIX };
+export const DEFAULT_SETTINGS: AudioSettings = {
+  enabled: false,
+  genre: DEFAULT_MUSIC_GENRE,
+  ...DEFAULT_MIX,
+};
 
 const STORAGE_KEY = 'canicarrera.audio.v1';
 
@@ -53,6 +64,7 @@ export function loadSettings(): AudioSettings {
     const parsed = JSON.parse(raw) as Partial<AudioSettings>;
     return {
       enabled: parsed.enabled === true,
+      genre: isMusicGenre(parsed.genre) ? parsed.genre : DEFAULT_MUSIC_GENRE,
       master: clamp01(parsed.master, DEFAULT_MIX.master),
       music: clamp01(parsed.music, DEFAULT_MIX.music),
       sfx: clamp01(parsed.sfx, DEFAULT_MIX.sfx),
@@ -84,7 +96,7 @@ export class AudioDirector {
   private ctx: AudioContext | null = null;
   private buses: AudioBuses | null = null;
   private score: Score | null = null;
-  private crowdSource: AudioBufferSourceNode | null = null;
+  private crowdSources: AudioBufferSourceNode[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
   /** Context time at which score time zero happens. */
   private t0 = 0;
@@ -163,10 +175,10 @@ export class AudioDirector {
     this.t0 = this.ctx.currentTime + START_LATENCY - scoreTime;
     this.scheduledTo = scoreTime;
     this.playing = true;
-    this.crowdSource = scheduleCrowd(
+    this.crowdSources = scheduleCrowd(
       this.ctx,
       this.buses,
-      this.score.crowd.filter((point) => point.t >= scoreTime),
+      this.score.crowd.filter((swell) => swell.t + swell.dur >= scoreTime),
       this.t0,
       this.score.duration,
     );
@@ -193,14 +205,14 @@ export class AudioDirector {
       clearInterval(this.timer);
       this.timer = null;
     }
-    if (this.crowdSource) {
+    for (const source of this.crowdSources) {
       try {
-        this.crowdSource.stop();
+        source.stop();
       } catch {
         // Already stopped.
       }
-      this.crowdSource = null;
     }
+    this.crowdSources = [];
     if (this.ctx && this.buses) {
       this.buses.master.disconnect();
       this.buses = createBuses(this.ctx, this.ctx.destination);

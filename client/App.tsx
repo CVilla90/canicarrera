@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { simulate } from '@shared/sim.ts';
-import { buildScore } from '@shared/audio/score.ts';
-import { ARCHETYPES } from '@shared/generator.ts';
+import { buildScore, isMusicGenre, musicGenreForSeed } from '@shared/audio/score.ts';
+import { ARCHETYPES, ARCHETYPE_NAMES } from '@shared/generator.ts';
+import { PALETTE_NAMES } from '@shared/palette.ts';
+import type { CreateRaceRequest } from '@shared/api.ts';
 
 import {
   AudioDirector,
@@ -28,9 +30,14 @@ import { SeedPlate } from './ui/SeedPlate.tsx';
 import { ResultsCard } from './ui/ResultsCard.tsx';
 import { AudioPanel } from './ui/AudioPanel.tsx';
 import { ExportPanel, type ExportPhase } from './ui/ExportPanel.tsx';
+import {
+  RaceSetupPanel,
+  type MusicChoice,
+  type RaceSetupSelection,
+} from './ui/RaceSetupPanel.tsx';
 
 type Status = 'booting' | 'creating' | 'measuring' | 'ready' | 'error';
-type Panel = 'none' | 'results' | 'export';
+type Panel = 'none' | 'results' | 'export' | 'setup';
 
 /**
  * Ignore viewport changes smaller than this, in pixels.
@@ -46,6 +53,12 @@ const RESIZE_EPSILON = 80;
 const RESIZE_DEBOUNCE_MS = 220;
 const AUTO_NEXT_DELAY_MS = 6000;
 const AUTO_NEXT_STORAGE_KEY = 'canicarrera.autoNext';
+
+function allowedValue<T extends string>(value: string | null, allowed: readonly T[]): T | undefined {
+  return value !== null && allowed.some((candidate) => candidate === value)
+    ? (value as T)
+    : undefined;
+}
 
 /** Auto-next is the broadcast default, but the viewer's choice is sticky. */
 function loadAutoNext(): boolean {
@@ -104,6 +117,7 @@ export function App(): React.ReactElement {
   // starts playing drum and bass at someone in an open-plan office is a page
   // they close.
   const [audioSettings, setAudioSettings] = useState<AudioSettings>(loadSettings);
+  const audioSettingsRef = useRef(audioSettings);
   const [exportAudio, setExportAudio] = useState(true);
   const audioRef = useRef<AudioDirector | null>(null);
   if (!audioRef.current) audioRef.current = new AudioDirector(audioSettings);
@@ -241,7 +255,9 @@ export function App(): React.ReactElement {
       // the tension curve the score is arranged against.
       const summary = simulate(result.spec, undefined, { trace: true });
       setVideoDuration(summary.videoDuration);
-      audioRef.current?.load(buildScore(result.spec, summary));
+      audioRef.current?.load(
+        buildScore(result.spec, summary, { genre: audioSettingsRef.current.genre }),
+      );
 
       scene.load(result.spec);
 
@@ -270,6 +286,9 @@ export function App(): React.ReactElement {
 
       const url = new URL(window.location.href);
       url.searchParams.set('c', result.spec.seed);
+      url.searchParams.set('world', result.spec.palette);
+      url.searchParams.set('track', result.spec.archetype);
+      url.searchParams.set('music', audioSettingsRef.current.genre);
       url.searchParams.delete('r');
       window.history.replaceState(null, '', url);
     },
@@ -361,11 +380,22 @@ export function App(): React.ReactElement {
     const params = new URLSearchParams(window.location.search);
     const raceId = params.get('r');
     const seed = params.get('c');
+    const palette = allowedValue(params.get('world'), PALETTE_NAMES);
+    const archetype = allowedValue(params.get('track'), ARCHETYPE_NAMES);
+    const requestedGenre = params.get('music');
+
+    if (isMusicGenre(requestedGenre)) {
+      const nextSettings = { ...audioSettingsRef.current, genre: requestedGenre };
+      audioSettingsRef.current = nextSettings;
+      setAudioSettings(nextSettings);
+      saveSettings(nextSettings);
+      audioRef.current?.setSettings(nextSettings);
+    }
 
     try {
       let result: RaceResult | null = null;
       if (raceId) result = await fetchRace(raceId);
-      if (!result) result = await createRace(seed ? { seed } : {});
+      if (!result) result = await createRace({ seed: seed || undefined, palette, archetype });
       await loadRace(result, { probe: true });
     } catch (error) {
       // Without this the busy overlay stays up forever and the page reads as
@@ -439,13 +469,26 @@ export function App(): React.ReactElement {
   // -------------------------------------------------------------- actions
 
   const newRace = useCallback(
-    async (seed?: string): Promise<void> => {
+    async (
+      request: CreateRaceRequest = {},
+      options: { music?: MusicChoice } = {},
+    ): Promise<void> => {
       if (race) autoNextSuppressedRaceRef.current = race.id;
       setAutoNextRemaining(null);
       setStatus('creating');
       setSnapshot(null);
       try {
-        const result = await createRace(seed ? { seed } : {});
+        const result = await createRace(request);
+        if (options.music) {
+          const genre = options.music === 'random'
+            ? musicGenreForSeed(result.spec.seed)
+            : options.music;
+          const nextSettings = { ...audioSettingsRef.current, genre };
+          audioSettingsRef.current = nextSettings;
+          setAudioSettings(nextSettings);
+          saveSettings(nextSettings);
+          audioRef.current?.setSettings(nextSettings);
+        }
         await loadRace(result);
       } catch {
         // Same reasoning as `boot`: never leave the busy overlay up.
@@ -488,10 +531,20 @@ export function App(): React.ReactElement {
   const changeAudio = useCallback(
     (next: AudioSettings): void => {
       const wasOff = !audioSettings.enabled;
+      const genreChanged = next.genre !== audioSettings.genre;
+      audioSettingsRef.current = next;
       setAudioSettings(next);
       saveSettings(next);
       const director = audioRef.current;
       if (!director) return;
+
+      if (genreChanged && race) {
+        const summary = simulate(race.spec, undefined, { trace: true });
+        director.load(buildScore(race.spec, summary, { genre: next.genre }));
+        const url = new URL(window.location.href);
+        url.searchParams.set('music', next.genre);
+        window.history.replaceState(null, '', url);
+      }
 
       if (next.enabled) {
         void director.unlock().then((ready) => {
@@ -499,19 +552,45 @@ export function App(): React.ReactElement {
           // Join the race already in progress rather than starting the score
           // from the top: the sim's clock is the score's clock.
           const sim = sceneRef.current?.sim;
-          if (ready && wasOff && sim && sim.phase !== 'finished') director.start(sim.time);
+          if (ready && (wasOff || genreChanged) && sim && sim.phase !== 'finished') {
+            director.start(sim.time);
+          }
         });
       } else {
         director.setSettings(next);
       }
     },
-    [audioSettings.enabled],
+    [audioSettings.enabled, audioSettings.genre, race],
+  );
+
+  const openNewRace = useCallback((): void => {
+    if (race) autoNextSuppressedRaceRef.current = race.id;
+    setAutoNextRemaining(null);
+    if (autoNext) {
+      void newRace();
+    } else {
+      setPanel('setup');
+    }
+  }, [autoNext, newRace, race]);
+
+  const startConfiguredRace = useCallback(
+    (selection: RaceSetupSelection): void => {
+      void newRace(
+        { palette: selection.palette, archetype: selection.archetype },
+        { music: selection.music },
+      );
+    },
+    [newRace],
   );
 
   const copyLink = useCallback((): void => {
     if (!race) return;
-    const url = `${window.location.origin}${window.location.pathname}?c=${race.spec.seed}`;
-    void navigator.clipboard?.writeText(url).then(
+    const url = new URL(window.location.pathname, window.location.origin);
+    url.searchParams.set('c', race.spec.seed);
+    url.searchParams.set('world', race.spec.palette);
+    url.searchParams.set('track', race.spec.archetype);
+    url.searchParams.set('music', audioSettingsRef.current.genre);
+    void navigator.clipboard?.writeText(url.toString()).then(
       () => {
         setCopied(true);
         setTimeout(() => setCopied(false), 2200);
@@ -584,6 +663,7 @@ export function App(): React.ReactElement {
           // browsers in the wild have `VideoEncoder` but not `AudioEncoder`.
           audioWanted: exportAudio,
           audio: result.hasAudio,
+          genre: audioSettings.genre,
           // The promise on the button, alongside what actually happened. This
           // pair is the only way to find out whether the cost model is honest
           // on hardware we do not own.
@@ -794,11 +874,19 @@ export function App(): React.ReactElement {
                       setExportPhase('choose');
                       setPanel('export');
                     }}
-                    onNewRace={() => void newRace()}
+                    onNewRace={openNewRace}
                     onReplay={replay}
                     autoNext={autoNext}
                     autoNextRemaining={autoNextRemaining}
                     onToggleAutoNext={toggleAutoNext}
+                  />
+                )}
+                {panel === 'setup' && (
+                  <RaceSetupPanel
+                    currentGenre={audioSettings.genre}
+                    onStart={startConfiguredRace}
+                    onClose={() => setPanel(snapshot?.phase === 'finished' ? 'results' : 'none')}
+                    t={t}
                   />
                 )}
                 {panel === 'export' && (
@@ -852,7 +940,7 @@ export function App(): React.ReactElement {
             {race && !immersive ? (
               <SeedPlate
                 seed={race.spec.seed}
-                onUseSeed={(seed) => void newRace(seed)}
+                onUseSeed={(seed) => void newRace({ seed })}
                 onCopyLink={copyLink}
                 copied={copied}
                 t={t}
@@ -910,7 +998,7 @@ export function App(): React.ReactElement {
                 <button
                   type="button"
                   className="btn btn-primary px-4 sm:px-[22px]"
-                  onClick={() => void newRace()}
+                  onClick={openNewRace}
                   disabled={busy}
                 >
                   <span className="sm:hidden">{t('action.newShort')}</span>

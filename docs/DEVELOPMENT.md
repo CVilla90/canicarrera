@@ -57,6 +57,20 @@ specification, restarts at time zero, and leaves race outcomes unchanged.
 ### Auto-next race
 
 - Default: enabled. Persistence key: `canicarrera.autoNext`.
+- While enabled, a manual New Race press also remains immediate and fully
+  random. While disabled, the same action opens the manual race setup panel.
+- Manual setup constrains world and track type independently; leaving either
+  on Random still lets the server curate the strongest candidate inside that
+  partial constraint. Music may also be Random; resolve it from the selected
+  race seed on a named cosmetic stream, then store the concrete genre in the
+  link. Music must never affect curation, simulation RNG, or race outcome.
+- A configured race link records the resolved `world`, `track`, and `music`
+  alongside its seed. Boot must validate those query values before sending
+  them to generation. The offline fallback must honor the same constraints as
+  the server.
+- Coming-soon worlds or music styles belong outside active selectors in a
+  clearly labelled Coming Soon section. Every selectable item must work today;
+  never map a future label onto an unrelated implemented world or soundtrack.
 - Delay: six seconds of **visible-tab time** after the finished phase.
 - The next curated race is prefetched during the podium window for a seamless
   transition.
@@ -70,6 +84,25 @@ specification, restarts at time zero, and leaves race outcomes unchanged.
   action wins.
 
 ## Deterministic visual work
+
+### Surface terrain and track visibility
+
+- Desert, glacier, and jungle terrain must clear the complete track/chase-camera
+  corridor after the final heightfield and large terrain masses are known.
+- "No physics collision" is not clearance. If terrain hides the chute or pack,
+  the visual layout is invalid even though the one-dimensional sim continues.
+- Resolve accidental overlap cosmetically by carving/lowering terrain or
+  rejecting and regenerating visual placement; never alter simulation state or
+  consume a simulation RNG stream to fix scenery.
+- Any overlap kept deliberately must be an authored tunnel-like set piece with
+  portals, validated interior/camera clearance, approach reservations, lighting,
+  and an unobstructed exit. Darkness or enclosure must not hide the marbles.
+- Test terrain height against dense track samples with a conservative margin,
+  then inspect real preview and exported frames across every surface world.
+- `client/scene/TerrainLayout.ts` owns the final terrain height function. Its
+  clamp must use the lowest nearby branch and include a complete mesh-cell
+  diagonal plus spline-sampling error; checking only the analytical height at
+  the centreline does not prove the rendered triangles are clear.
 
 Cosmetic placement should use a stream in `shared/rng.ts`, keyed by seed and a
 stable label. Animation must use `sim.time`. Adding a prop, character, particle,
@@ -125,6 +158,51 @@ track grammar. Never make an ordinary prop intersect and call the overlap a
 tunnel after the fact. A new cave, ruin, mountain, or planet should reuse this
 contract and extend its pure tests before it adds renderer dressing.
 
+### In-scene video attribution
+
+Attribution belongs to the pixels, not the page around them. The shared link and
+the HTML HUD are useful while watching, but neither exists after someone uploads
+the MP4 elsewhere.
+
+- Keep the rendered brand, creator credit, and destination together in
+  `client/branding.ts`. A credit or deployment-URL change must not require edits
+  to canvas drawing or scene lifecycle code.
+- `client/scene/AttributionLayout.ts` owns sign selection and every visible
+  bound. Place only at eligible segment landmarks, use `COSMETIC.billboards`,
+  and return fewer signs rather than forcing one across the camera or another
+  track section.
+- Placement priority is set piece → attribution → ordinary props and
+  spectators. A new sign shape must reserve its complete geometry from both
+  consumers before the renderer grows it.
+- `client/scene/Attribution.ts` is only a Three.js consumer. Use local canvas
+  textures rather than fetched fonts or images, and keep trackside text on a
+  texture with the same aspect ratio as its plane.
+- The outro is a camera child but still a scene object. Drive its fade from
+  `sim.time - sim.endTime`; a CSS overlay or wall-clock timeout will disappear
+  from export or drift from the final frames.
+- Dispose the sign geometry/materials, both canvas textures, the outro scrim,
+  and the camera child whenever a race is replaced.
+
+### Audio profiles and fatigue budget
+
+- Genre is cosmetic state. `shared/audio/score.ts` may derive notes only from
+  the race summary, the explicit genre, and `COSMETIC.music`; it must never
+  consume simulation RNG or change `SIM_VERSION`.
+- Keep one score and one `BaseAudioContext` scheduler for both live playback and
+  offline export. A voice or profile implemented only in one path is incomplete.
+- A genre owns its tempo/grid, harmony, rhythm, arrangement, and voice recipes.
+  Shared code still owns exact video duration, event SFX, tension planning, and
+  lights-out alignment. Every note/effect must begin and finish inside the file.
+- Broadband ambience must be finite. Crowd sound is represented as bounded
+  swells with stopped sources and audible rests, not a low-gain loop that spans
+  the race. Do not “fix” fatigue by merely lowering a continuous noise floor.
+- Persist only a validated genre ID. Switching profiles during playback rebuilds
+  the cosmetic score and rejoins at simulation time; export must use the same
+  selected ID even when preview sound is muted.
+- Keep automated determinism/grid/duration/level coverage, but record subjective
+  listening honestly. Peak/RMS checks cannot establish that a mix is pleasant on
+  phone speakers or non-fatiguing over several consecutive races.
+
 ## Verification
 
 From the project directory:
@@ -147,6 +225,14 @@ Also run `git diff --check` before handoff. The build currently emits expected
 warnings about Tailwind sourcemaps and the large Three.js chunk; a warning is not
 the same as a failed build.
 
+For repeatable B1 browser measurements, build and start the production server,
+then run `npm run benchmark:browser -- --quality=1080p30`. The dependency-free
+harness also accepts `1080p60`, `--cpu-throttle=4`, `--hardware-concurrency=4`,
+`--mode=low-power`, `--mode=swiftshader --probe-only`, and
+`--genre=dnb|kids|rock`. Never label a
+throttled or low-power run as a different physical laptop; record the actual
+GPU string returned by the harness.
+
 ### Manual UI matrix
 
 - 320–390px portrait phone viewport.
@@ -160,6 +246,13 @@ the same as a failed build.
 - Run several consecutive races and watch for growing GPU memory or lost WebGL
   contexts.
 - Confirm preview audio and exported audio remain aligned after a transition.
+- Audition DnB, Kids, and Rock on phone speakers and headphones; switch genre
+  during a race, reload to confirm persistence, and inspect/decode one exported
+  AAC track for each newly changed profile.
+- Confirm trackside attribution is legible without obstructing the pack and the
+  outro card remains title-safe in portrait and landscape.
+- Extract at least one sign frame and one outro frame from an actual MP4; HTML
+  inspection alone cannot prove video attribution exists.
 
 ## Checkpoint protocol
 

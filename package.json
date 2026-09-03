@@ -1,6 +1,6 @@
 {
   "name": "canicarrera",
-  "version": "0.1.0",
+  "version": "0.2.0-beta.1",
   "private": true,
   "type": "module",
   "description": "Generador de carreras de canicas — server invents the race, your GPU renders the video.",
@@ -14,6 +14,7 @@
     "build": "npm run build:client && npm run build:server",
     "build:client": "vite build",
     "build:server": "esbuild server/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/server/index.js --packages=external",
+    "benchmark:browser": "node tools/run-browser-benchmark.mjs",
     "start": "node dist/server/index.js",
     "check": "tsc --noEmit",
     "test": "tsx tools/run-tests.ts"

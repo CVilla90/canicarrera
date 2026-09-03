@@ -1,5 +1,6 @@
 import { useState } from 'react';
 
+import { isMusicGenre, MUSIC_GENRES, type MusicGenre } from '@shared/audio/score.ts';
 import type { AudioSettings } from '../audio/director.ts';
 import type { Translate } from '../i18n.ts';
 
@@ -8,9 +9,9 @@ import type { Translate } from '../i18n.ts';
  *
  * Closed, it is one button — because for most people the only question is "on or
  * off", and a race that opens a mixer at you is a race nobody watches. Open, it
- * is three sliders, because the three layers genuinely want different levels
- * depending on where the video is going: music down for a classroom, crowd up
- * for a highlight reel.
+ * adds a genre selector and four mix sliders because those layers genuinely
+ * want different levels depending on where the video is going: music down for
+ * a classroom, crowd up for a highlight reel.
  *
  * The button is also the **gesture** that unlocks the `AudioContext`. Browsers
  * refuse to make noise before a user acts, so nothing is created until this is
@@ -57,6 +58,23 @@ export function AudioPanel({
 
       {open && (
         <div className="border-t border-(--color-rule) px-3 py-3">
+          <label className="mb-2.5 flex items-center gap-2">
+            <span className="u-label w-[68px] shrink-0">{t('audio.genre')}</span>
+            <select
+              value={settings.genre}
+              onChange={(event) => {
+                if (isMusicGenre(event.target.value)) set({ genre: event.target.value });
+              }}
+              className="min-w-0 flex-1 border border-(--color-rule) bg-(--color-ink) px-2 py-1 text-(--color-bone)"
+              style={{ fontSize: '16px' }}
+            >
+              {MUSIC_GENRES.map((genre) => (
+                <option key={genre} value={genre}>
+                  {genreLabel(genre, t)}
+                </option>
+              ))}
+            </select>
+          </label>
           <Slider
             label={t('audio.master')}
             value={settings.master}
@@ -80,6 +98,17 @@ export function AudioPanel({
       )}
     </div>
   );
+}
+
+function genreLabel(genre: MusicGenre, t: Translate): string {
+  switch (genre) {
+    case 'dnb':
+      return t('audio.genre.dnb');
+    case 'kids':
+      return t('audio.genre.kids');
+    case 'rock':
+      return t('audio.genre.rock');
+  }
 }
 
 function Slider({

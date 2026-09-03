@@ -3,15 +3,14 @@
 **Read this first.** `PLAN.md` is the strategy and still accurate; this file is
 where the code actually is.
 
-> **Latest checkpoint: 2026-08-27.** All three surface biomes now have an
-> intentional deterministic set piece. The newest is an open jungle ruin with
-> reserved trees/spectators and bounded arches, masonry, vines, and glyphs on
-> `feature/jungle-ruins`. Typecheck, **102/102 tests**, and the production build
-> pass. A visible foreground race and real completed Edge download verified the
-> approach, interior, exit, 720p30 H.264/AAC output, A/V alignment, and decoder
-> path after the first visual pass was corrected from a dark tunnel into a
-> sunlit colonnade. Device QA remains. Exact metrics, files, risks, and restart
-> point are in `docs/CURRENT_WORK.md`.
+> **Latest checkpoint: 2026-09-03.** Attribution, fatigue-safe multi-genre audio,
+> terrain/large-scenery clearance, typecheck, **126/126 tests**, and the
+> production build pass. The built server
+> passed a local deployment simulation. Real production-UI 1080p30/60 exports
+> on the RTX laptop, Kids/Rock AAC exports, and a forced-SwiftShader probe are
+> measured and decoded; only a real mid-range laptop remains for B1. Deployment
+> and phone/Safari QA remain open. Exact evidence is in
+> `docs/CURRENT_WORK.md`.
 
 *Earlier baseline (2026-08-02): Stage 0 was built and pre-flight-checked; that
 session added **audio**, **characters**, and the **mobile/iPhone** fixes, and
@@ -21,9 +20,10 @@ solved the surface-world grading bug that had been open since 2026-08-01.
 ## Version control
 
 `github.com/CVilla90/canicarrera`, public. `main` contains the older published
-baseline; active work is on `feature/jungle-ruins`, based on pushed glacier
-commit `fda23d6`. Commit `b4a31e8` preserves the complete pre-tunnel checkpoint
-before the mine implementation.
+baseline; active uncommitted work is on `feature/attribution-billboards`, based
+on jungle-ruin commit `a081f29`. The jungle branch is pushed; this attribution
+branch is local only. Commit `b4a31e8` preserves the complete pre-tunnel
+checkpoint before the mine implementation.
 
 ⚠️ The stored `gh` tokens on this laptop are stale. Push over the personal SSH alias:
 `git@github-personal:CVilla90/canicarrera.git` (already set as `origin`). The
@@ -48,16 +48,16 @@ export an MP4.
 | Export correctness | 720p30, 2048 frames, **68.27 s** of video — exactly `endTime + 4.5 s` |
 | Export container | `ftyp isom`, `moov` **before** `mdat` (fast start), 39.6 MB ≈ 4.9 Mbps vs 5 Mbps target |
 | Export speed | **460 frames/s** at 720p30 — a 68 s video exported in **5 s** |
-| Soundtrack | drop lands exactly on lights-out; **0** clipped samples; the MP4's audio decodes to **79.94 s** against **79.93 s** of video |
+| Soundtrack | DnB/Kids/Rock deterministic profiles; finite crowd swells; two new 1080p AAC exports decode cleanly and peak at −3.0/−2.2 dBFS |
 | Surface worlds | the pale-wash bug is **fixed** — same pixel 192,187,137 → 46,96,24 |
 
-`npm test` is currently **102 checks** and takes a few seconds. Run it after touching
+`npm test` is currently **126 checks** and takes a few seconds. Run it after touching
 anything in `shared/`, `client/render/` or `client/audio/`.
 
-The newer foreground Edge probe measured **789.5 raster fps** and **83.9 pipeline
-fps** on the real loaded scene. A 70 s 720p30 export with audio completed in
-about **14 s** and decoded cleanly. Task **B1 remains partial** because its
-1080p30/60, mid-laptop, and SwiftShader measurements are still outstanding.
+The current B1 matrix includes real RTX-laptop 1080p30/60 exports and a
+positively identified SwiftShader probe at **3.089 full-pipeline fps**. The 4×
+CPU-throttled results remain an approximation; only the physical mid-range
+laptop measurement is outstanding.
 
 ## Run it
 
@@ -254,6 +254,30 @@ between arches open to daylight.
   fast-start atoms, and both streams decode cleanly; extracted frames match the
   corrected foreground view without the HTML HUD.
 
+### In-scene video attribution (added 2026-08-29)
+
+- `client/branding.ts` is the only source for the scene-rendered brand, creator
+  credit, and destination. It currently points at the public GitHub repository;
+  replace that object when a public deployment URL or credit changes.
+- `client/scene/AttributionLayout.ts` selects two or three buffered segment
+  landmarks with `COSMETIC.billboards`, serialises the upstream-facing basis and
+  complete bound, yields to authored set-piece intervals, and reserves props and
+  spectators before either is placed.
+- `client/scene/Attribution.ts` consumes that contract as instanced scene boxes
+  with local 2:1 canvas textures. A square camera-attached scene card fades in
+  from simulation time during the outro, so preview and MP4 share one path.
+- The 540-layout suite covers all worlds and grammars: 539 layouts fit three
+  signs, one honest compact-jungle case fits two, all 21,600 requested surface
+  props remain, and the tightest extra prop margin is 0.17 m.
+- Production Edge exported `ATTRQA01` through the real UI at 720p30 Estándar
+  with audio: 2,121 H.264 frames, 70.700 s video, 70.720 s AAC, 44,132,927 bytes,
+  and a complete browser download in roughly 12 s. FFmpeg decoded both streams;
+  extracted sign and outro frames preserve the canvas composition and omit the
+  HTML HUD.
+- Pixel inspection caught and corrected the first pass: a square canvas mapped
+  onto a 2:1 sign stretched the type and exposed too much gold backing. Canvas
+  and plane aspect ratios now match.
+
 No physics or race-spec field changed. `SIM_VERSION` and `GENERATOR_VERSION`
 remain unchanged.
 
@@ -301,11 +325,11 @@ and looked correct. `autoClear` had already been caught in that same function
 once (see below). A clear that is explicit about *when* can still be wrong about
 *what*.
 
-## Audio (added 2026-08-02) — Stage 1's first piece, shipped
+## Audio (added 2026-08-02; profiles expanded 2026-08-29) — shipped
 
-The race has a soundtrack: **procedural drum and bass arranged to the race, plus
-sound effects and a crowd.** It is optional, off by default in the preview, and
-on by default in the exported file.
+The race has a soundtrack: **procedural DnB, children's music, or rock arranged
+to the race, plus sound effects and a crowd.** It is optional, off by default in
+the preview, and on by default in the exported file.
 
 ```
 shared/audio/score.ts     seed + sim events -> a timed Score. Pure, node-tested.
@@ -327,7 +351,7 @@ client/lib/yield.ts       the unthrottled yield, now shared with the video loop
    recording for YouTube's Content ID to match**, which PLAN §5.1 names as the
    real risk rather than licensing.
 3. **The score cannot touch the sim.** Cosmetic RNG stream (`COSMETIC.music`),
-   same seed → same soundtrack, `SIM_VERSION` still 1.
+   same seed + genre → same soundtrack, `SIM_VERSION` still 1.
 
 ### It is arranged *to* the race, not under it
 
@@ -338,6 +362,21 @@ cycle *and then* the race overrides it: a bar where the front two are fighting i
 a drop bar whatever the cycle says, and the last four bars before the finish
 always are. `RaceSim` now emits a **tension curve** for this, sampled in the
 existing 5 Hz metrics pass.
+
+### Fatigue fix and genre profiles (2026-08-29)
+
+The reported static was real: `scheduleCrowd` ran one looping broadband-noise
+source across the whole file. The score now describes short crowd swells tied to
+lights-out, sufficiently tense battles, and the finish. Each source stops, lasts
+at most 2.7 seconds, and leaves at least 0.8 seconds of silence before the next.
+
+The remembered bilingual selector chooses `dnb`, `kids`, or `rock`. Each profile
+owns its own BPM/grid, harmony, patterns, and procedural voices, but all three
+share exact race duration, event SFX, tension planning, and one live/offline
+scheduler. Kids and Rock were selected through the production UI and exported
+at 1080p30 with AAC; both decoded completely and remained below full scale.
+Subjective phone/headphone audition is still required—metrics cannot prove that
+a timbre is pleasant.
 
 ### Verified, with numbers
 
@@ -470,15 +509,14 @@ The wordmark also shrinks below `sm` — at 390 px the two used to overlap.
 - **Tier D** (server render): stubbed at the API only, and now **cancelled as a
   direction** — see the quality-ladder section above. The API stub stays because
   the client already speaks the protocol and removing it buys nothing.
-- Audio, accounts, YouTube upload, admin panel — Stage 1+.
+- Commentary, accounts, YouTube upload, admin panel — Stage 1+.
 
 ## Known issues
 
-1. **Capability coverage is still partial.** The corrected probe has now run in
-   visible foreground Edge sessions and two real 720p30 exports completed in
-   roughly 13–14 seconds. B1 still lacks 1080p30/60, a mid-range laptop, and
-   SwiftShader, so do not generalise this machine's result into the whole
-   quality ladder.
+1. **Capability coverage is still partial across hardware classes.** Real
+   1080p30/60 exports on the RTX laptop and forced SwiftShader are recorded in
+   `docs/CURRENT_WORK.md`. A 4× CPU-throttled pair is useful but is not a real
+   mid-range-laptop measurement; do not generalise this machine's result.
 2. **Race ids do not survive a redeploy.** The registry is in memory
    (`MemoryRaceStore`). That is fine by design — a race is fully recoverable
    from its seed and share links use `?c=<seed>` — but `?r=<id>` links die.
@@ -494,10 +532,15 @@ The wordmark also shrinks below `sm` — at 390 px the two used to overlap.
    a desktop and in a 390 px iframe, not on the device that reported the
    problem. The one thing that would settle it is a sustained export on that
    iPhone with the memory budget in place.
-6. **Foreground audio is verified only on this desktop.** Two full 720p30
-   foreground exports with AAC now complete in roughly 13–14 seconds and decode
-   cleanly. A lower-power laptop and the target iPhone still need the sustained
-   export/memory check.
+6. **Foreground audio is verified only on this desktop.** DnB plus 1080p30 Kids
+   and Rock exports with AAC decode cleanly and stay below full scale. A human
+   listening pass, lower-power laptop, and the target iPhone sustained export/
+   memory check are still required.
+7. **The surface-world occlusion fix still needs a broad human viewing pass.**
+   `TerrainLayout.ts` now clamps all rendered heightfield-cell corners beneath
+   the lowest nearby track branch, and tilted ice shards reserve their complete
+   footprint. The 60-layout/48,268-sample pure matrix and a live WebGL boot pass,
+   but desert/glacier/jungle foreground viewing and encoded-frame checks remain.
 
 ## Things that were subtly wrong and are worth not re-breaking
 
@@ -566,11 +609,7 @@ error — that is the failure mode to recognise.
 
 ## Next
 
-1. **In-scene attribution billboards and an outro card** — canvas-textured scene
-   objects, not HTML, so `CANICARRERA`, Carlos's credit, and a URL survive in
-   exported MP4s. Give placement a pure layout contract and verify foreground /
-   encoded parity before considering sponsor inventory.
-2. **Deploy** (W10) — still the product-launch blocker and the only way to run
+1. **Deploy** (W10) — still the product-launch blocker and the only way to run
    the real iPhone/Safari check against the intended hosting path.
    🔴 **Use a blank Repl + `git clone https://github.com/CVilla90/canicarrera.git`.
    Do NOT use "Import from GitHub"** — it restructures the repo before any agent
@@ -579,22 +618,26 @@ error — that is the failure mode to recognise.
    carries build/run. `npm install` is deliberately *not* in the build command.
    Confirm the machine-power slider stops match PLAN §1.2 while you are in there
    (risk R2).
-3. **Smoke test on a phone and on Safari** — especially a sustained export, watching
+2. **Smoke test on a phone and on Safari** — especially a sustained export, watching
    memory (PLAN §R3b). ⚠️ Now more important than before: the presets add
    supersampled half-float buffers. `Alto` at 1080p allocates 2560x1440
    half-float targets, and a phone that survives `Ligero` may not survive that.
    `PostFX.isSupported` gates on the extension, **not on memory**.
-4. **B1 — finish the matrix.** Foreground 720p is measured; 1080p30/60,
-   a mid-range laptop, and SwiftShader remain. Telemetry already records
+   Also verify the trackside credit and square outro at portrait and landscape
+   sizes, then inspect actual encoded frames rather than only the HTML page.
+3. **B1 — finish the physical-hardware matrix.** 1080p30/60 and SwiftShader are
+   measured; a real mid-range laptop remains. Telemetry already records
    `predicted` beside real elapsed time on every `export_finished` event.
-5. Then **billboards** — scene objects, not a DOM overlay, because the MP4 is
-   what gets shared and a CSS watermark never reaches it.
+4. **Use telemetry to decide the next compatibility spend.** Commentary and the
+   no-WebCodecs WASM encoder remain deliberately deferred; neither should jump
+   ahead of real device/export data by assumption.
 
-## Roadmap detail added 2026-07-27 (design only, nothing built)
+## Roadmap detail added 2026-07-27 (historical design notes)
 
 `PLAN.md` gained four sections from a design conversation at the end of the
-session. Nothing in them is implemented; they exist so the next session does not
-re-derive the constraints.
+session. Audio, worlds, and attribution billboards have since shipped as
+described above; commentary and track-family work remain design only. The notes
+stay here so later sessions do not re-derive their constraints.
 
 - **§5.1 Audio** — SFX, music and commentary as three consumers of the sim's
   existing event stream. Export runs faster than realtime, so the soundtrack must
@@ -610,8 +653,9 @@ re-derive the constraints.
   change who wins. Content ID, not licensing, is the real risk.
 - **§3.1–3.3 Worlds, track families, billboards** — biome is a bigger concept
   than palette; an oval fights the physics model and a **banked spiral is the
-  cheap honest substitute**; billboards must be scene objects because the MP4 is
-  what gets shared, and the first reason to build them is attribution, not ads.
+  cheap honest substitute**; the shipped attribution billboards are scene
+  objects because the MP4 is what gets shared, and their purpose is attribution,
+  not ads.
 
 The one item there that would need a `SIM_VERSION` bump is **banking**. Emitting
 collision events for SFX would not.

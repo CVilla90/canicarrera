@@ -1,16 +1,18 @@
 # Canicarrera — Production Plan
 
-> **Status (2026-08-27): Stage 0 is built and working locally — read
+> **Status (2026-08-29): Stage 0 is built and working locally — read
 > [`HANDOFF.md`](HANDOFF.md) first.** The proof of concept described below now
 > lives in `legacy/`. Everything in §2 (client-side render + WebCodecs export),
 > §2.1 (pre-sim curation), §3 (determinism) and §4.3 W1–W9 + W11 is implemented
 > and tested. Audio, biome geometry, characters, mobile HUD improvements, and
 > deterministic desert-mine, glacier-ice-cave, and jungle-ruin set-piece slices
-> also exist on the active feature branch.
-> **W10 — deploy and smoke-test on a phone/Safari — is not done.** B1 now has a
-> real foreground 720p measurement, but still needs its 1080p30/60, mid-laptop,
-> and SwiftShader measurements. This document stays as the strategy; it has not
-> been rewritten wholesale to past tense.
+> also exist. The active `feature/attribution-billboards` branch adds pure,
+> deterministic in-scene signs and a simulation-time outro card, verified
+> through a real H.264/AAC browser export.
+> **W10 — deploy and smoke-test on a phone/Safari — is not done.** B1 now has
+> decoded real 1080p30/60 exports on the RTX laptop and a forced-SwiftShader
+> measurement; only a real mid-range laptop remains. This document stays as the
+> strategy; it has not been rewritten wholesale to past tense.
 
 *Canica* + *carrera*. Today it is a single-page proof of concept: eight marbles
 tumble down a procedurally generated glass chute, the winner is genuinely random
@@ -582,6 +584,31 @@ never alter who wins.
 
 ##### Music: arrange it *to* the race, not under it
 
+> ✅ **Audio follow-up shipped 2026-08-29.** The tiring static was the ambient
+> crowd: one looping broadband-noise source remained audible throughout the
+> race. It is now a series of finite tension-driven swells, each no longer than
+> 2.7 s and separated by at least 0.8 s of literal silence. DnB is now one
+> deterministic profile beside **children's music** and **rock**, selected from
+> a remembered bilingual control and carried through the same live/export path.
+> The two new 1080p30 production-UI exports decoded cleanly and peaked below
+> full scale. Human phone/headphone listening remains the tuning gate.
+
+Each deterministic profile owns tempo
+range, scale/harmony, instrumentation and voice recipes, drum vocabulary, phrase
+shape, and event accents, while the shared score contract still owns exact
+duration, race-event alignment, cosmetic seeded selection, and preview/export
+parity. Children's music should be bright, playful, melodic, and rhythmically
+clear without becoming shrill; rock should use procedural drums, bass, and
+guitar-like synthesis with builds and finish stingers, without sampled riffs or
+anything that can trigger Content ID. The same seed and genre must reproduce the
+same score, and genre selection must never affect simulation RNG or the race.
+
+The explicit selector is the first shipped interaction so QA can compare
+profiles. Random genre selection can come later as a cosmetic seeded default,
+with a user override. Tests now cover bounded levels, no always-on noise source,
+deterministic selection, notes and effects within the video duration, and valid
+arrangements for short and long races in every genre.
+
 Drum and bass is the obvious fit, and not only tonally — its structure maps onto
 a race almost exactly: **intro → build → drop → breakdown → second drop** against
 **countdown → lights out → mid-race → battle → finish**.
@@ -670,12 +697,52 @@ The cost profile is different from everything else in this plan: biomes cost
 **bundle size and GPU time**, not server money. So: lazy-load props and textures
 per biome, never in the initial bundle.
 
+##### Universe tour (concept backlog)
+
+The orbit family can grow from a backdrop into a deterministic tour through a
+whole universe: close planets and moons, stars and comets, complete solar
+systems, distant galaxies, black holes, and neutron stars. Treat the largest
+moments as authored set pieces selected from safe track intervals; scale and
+pacing are what make them feel mind-blowing.
+
+Two signature transitions belong here: a wormhole jump and a lightspeed run
+that carry the pack into a radically different region of space. First keep race
+position and physics continuous and make the jump a simulation-time visual and
+camera transition driven by a cosmetic RNG stream. That preserves determinism
+and preview/export parity while leaving room for a later multi-region track
+grammar. Preserve pack readability and the chase-camera envelope throughout—the
+spectacle cannot hide the race.
+
 ✅ One thing that already works correctly: the capability probe benchmarks **the
 real loaded scene**, so a heavy jungle biome automatically produces a lower
 measured throughput and an honest, longer export ETA. No change needed — this is
 the payoff for not benchmarking a synthetic triangle.
 
 ##### Intentional set pieces
+
+> ✅ **Surface-world clearance implemented 2026-09-03.** The renderer now uses
+> a pure heightfield contract that clamps procedural relief beneath the lowest
+> nearby track branch, including a complete mesh-cell diagonal and spline
+> sampling error. Tilted ice shards also reserve their full conservative
+> footprint. The deterministic matrix covers every surface biome and grammar;
+> foreground and encoded-frame review across additional seeds remains the
+> visual gate.
+
+Make this a generation/layout invariant. Sample the entire track against the
+final terrain heightfield and large terrain bounds, including a conservative
+spline-approximation margin. Where terrain would intersect, either lower/carve
+the terrain, raise or reject that visual layout without changing race physics,
+or deliberately replace the interval with an authored enclosure. Never accept
+an accidental overlap merely because there is no physics collision.
+
+Intentional enclosure means a readable tunnel, cave, ruin passage, canyon, or
+similar set piece with explicit entrance and exit portals, continuous interior
+clearance for the chute and camera, non-local-track clearance, lighting and
+materials that keep every marble visible, and reservations that keep ordinary
+terrain/props out of its approaches. The transition must be obvious before the
+pack enters and the exit must return to a clean sightline. Add stress coverage
+across every surface palette and track grammar, plus real preview and encoded-
+frame checks; a numeric bound alone cannot prove that a dark tunnel is watchable.
 
 The first vertical slice is implemented for `desierto`: a deterministic mine
 selected only from a sampled straight interval, with explicit portals, inner
@@ -691,7 +758,8 @@ the profile-driven selector and passed the same gate on `ICEVIEW5`, including a
 completed browser download. The open jungle ruin then passed on `RUINQA105`
 after real frames corrected a safe-but-dark shell into a sunlit colonnade. All
 three surface biomes now have a verified intentional slice; in-scene attribution
-billboards are the next local product feature.
+billboards and the outro card are also implemented and encoded-output verified.
+Deployment and real-device QA are now the next product gate.
 
 #### 3.2 Track families: ovals and F1 layouts
 
@@ -715,7 +783,50 @@ them are cheap and one is not:
   the tube's local frame and changing where "down" is inside it. That touches
   collision geometry and **is** a sim change — bump `SIM_VERSION`.
 
+##### Race dynamics: jumps, routes, surfaces, boosts, and obstacles
+
+Races can become substantially less passive by adding deterministic gameplay
+features along the course:
+
+- **Jumps and gaps** — authored takeoff/landing pairs, visible airtime, landing
+  impacts, and recovery space. Validate every trajectory and camera envelope so
+  a marble cannot disappear, miss the course indefinitely, or land inside art.
+- **Bifurcations** — alternate routes with different length/risk profiles that
+  rejoin cleanly. This is the largest change because the current simulator is
+  one-dimensional along one open curve; honest branches require a track graph,
+  deterministic route choice, merge ordering/collision rules, and new curation
+  metrics. A decorative fake fork is acceptable only if it does not pretend the
+  marbles made a meaningful choice.
+- **Surface zones** — water, dirt/mud, ice, sand, and other readable materials
+  with explicit grip, drag, rolling-resistance, splash/dust, and sound profiles.
+  Visual material boundaries and physics-zone boundaries must be identical.
+- **Speed boosts** — clearly telegraphed pads or downhill-energy features with a
+  bounded impulse/force, cooldown or one-shot rule, and enough downstream room
+  for the pack and camera. This introduces motive force beyond gravity.
+- **Obstacles** — gates, bumpers, pendulums, rollers, breakable-looking barriers,
+  or moving hazards. Their motion and collision schedule must use simulation
+  time and deterministic state, never wall-clock animation or cosmetic RNG.
+
+These are race mechanics, not scenery. Introduce them behind a new simulation
+version and extend `RaceSpec`, generator validation, event traces, soundtrack/
+SFX hooks, curation scoring, replay links, and regression fixtures together.
+Fairness does not mean every route or surface is equally fast; it means the
+trade-off is legible, deterministic, bounded, and cannot produce routine DNFs.
+Curate for moments—side-by-side route splits, lead changes after boosts, jump
+overtakes, and converging finishes—rather than maximizing the raw number of
+hazards. Start with one vertical slice (a safe jump or one surface zone), prove
+preview/export and outcome determinism, then add branching only after the
+single-curve assumptions have been enumerated and deliberately replaced.
+
 #### 3.3 Billboards
+
+> ✅ **Attribution slice shipped 2026-08-29.** Two or three deterministic signs
+> are selected from safe segment landmarks after set pieces and before ordinary
+> props/spectators. A camera-attached scene card fades in from simulation time
+> during the outro. Both use local canvas textures and one replaceable copy
+> object in `client/branding.ts`; preview and a real downloaded MP4 contain the
+> same brand, creator credit, and URL. This is attribution only—there is no ad
+> inventory or sponsor-selection system.
 
 Textured planes along the track, placed at `landmarks` (which already exist).
 Text is simplest as canvas-drawn textures (`CanvasTexture`) — no font loading in
@@ -725,12 +836,12 @@ WebGL, and deterministic.
 thing people share, so anything that is not *in the scene* does not exist where
 it matters.
 
-> **The reason to do this early is not revenue — it is that the exported video
-> currently carries no attribution at all.** Someone uploads a Canicarrera race
-> to YouTube today and nothing in the file says where it came from. Billboards
-> reading `CANICARRERA`, `creado por Carlos Villa`, and a URL, plus an end card
-> over the outro, turn every exported video into its own marketing. That is worth
-> more than ad space for a long time.
+> **The reason this shipped early is not revenue — it is attribution.** Before
+> this slice, someone could upload a Canicarrera race and nothing in the file
+> said where it came from. Billboards reading `CANICARRERA`, the configured
+> creator credit, and a URL, plus an end card over the outro, now turn every
+> exported video into its own marketing. That is worth more than ad space for a
+> long time.
 
 ⚠️ On selling billboard space later: an advertiser buying placement in
 *user-generated* video wants to know what it appears next to, and paid promotion

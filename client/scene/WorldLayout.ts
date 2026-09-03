@@ -163,7 +163,10 @@ function shapeFor(kind: PropKind, rng: Rng): Shape | null {
       axisY: 1,
       axisZ: 0,
       angle: rng.next() * Math.PI,
-      radius: Math.max(scaleX, scaleZ),
+      // The tall octahedron leans by up to 0.4 rad. Its Y extent therefore
+      // contributes to its plan-view footprint; using only X/Z allowed the tip
+      // of a large shard to lean into the track even when its base was clear.
+      radius: Math.max(scaleX, scaleY, scaleZ),
     };
   }
 

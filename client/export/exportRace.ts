@@ -13,7 +13,7 @@
  * want to work.
  */
 import { simulate } from '@shared/sim.ts';
-import { buildScore } from '@shared/audio/score.ts';
+import { buildScore, type MusicGenre } from '@shared/audio/score.ts';
 import type { RaceSpec } from '@shared/spec.ts';
 import type { RaceScene } from '../scene/RaceScene.ts';
 import { makeYield } from '../lib/yield.ts';
@@ -63,7 +63,7 @@ export interface ExportOptions {
    * people watch the preview in silence at a desk and still want sound in the
    * video they are about to upload.
    */
-  audio: Mix | null;
+  audio: (Mix & { genre: MusicGenre }) | null;
   onProgress?: (progress: ExportProgress) => void;
   signal?: AbortSignal;
 }
@@ -147,7 +147,7 @@ export async function exportRace({
         secondsLeft: null,
         queuePressure: 0,
       });
-      const score = buildScore(spec, summary);
+      const score = buildScore(spec, summary, { genre: audio.genre });
       const buffer = await renderScore(score, audio);
       if (signal?.aborted) throw new ExportAborted();
       await encodeAudioBuffer(buffer, audioEncoder);

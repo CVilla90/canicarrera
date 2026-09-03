@@ -21,9 +21,12 @@ import {
   BAR,
   BAR_ZERO,
   INTRO_BARS,
+  MUSIC_GENRES,
   SFX_MAX_SECONDS,
   SFX_SHAPES,
   buildScore,
+  musicGenreForSeed,
+  musicGrid,
   sfxSeconds,
   type SfxKind,
 } from '../shared/audio/score.ts';
@@ -54,6 +57,11 @@ import {
   sampleTrackPlan,
 } from '../client/scene/WorldLayout.ts';
 import {
+  TERRAIN_SPINE_SPACING,
+  TERRAIN_VERTICAL_CLEARANCE,
+  buildTerrainHeightfield,
+} from '../client/scene/TerrainLayout.ts';
+import {
   ICE_CAVE_FINISH_BUFFER,
   ICE_CAVE_GRID_BUFFER,
   ICE_CAVE_ICICLE_CAMERA_MARGIN,
@@ -80,6 +88,19 @@ import {
   clearsCharacterExclusions,
   relocateCharacterArc,
 } from '../client/scene/Characters.ts';
+import { VIDEO_ATTRIBUTION } from '../client/branding.ts';
+import {
+  ATTRIBUTION_BILLBOARD_COUNT,
+  ATTRIBUTION_CAMERA_MARGIN,
+  ATTRIBUTION_FINISH_BUFFER,
+  ATTRIBUTION_GRID_BUFFER,
+  ATTRIBUTION_MIN_ARC_SPACING,
+  ATTRIBUTION_OTHER_TRACK_MARGIN,
+  OUTRO_CARD_DELAY,
+  OUTRO_CARD_FADE,
+  buildAttributionLayout,
+  outroCardOpacity,
+} from '../client/scene/AttributionLayout.ts';
 
 let failures = 0;
 let checks = 0;
@@ -293,6 +314,82 @@ section('World layout clearance');
   console.log(
     `       ${placed} props across ${worlds.length * 12} layouts · ` +
       `${smallestMargin.toFixed(2)} m tightest extra margin`,
+  );
+}
+
+// ------------------------------------------------------------- terrain layout
+//
+// Terrain is itself scenery. Validate the corners of the real 64x64 mesh cell
+// beneath dense centreline samples: because each rendered triangle is a linear
+// interpolation of those corners, keeping all four below the clearance ceiling
+// proves the ground cannot cover the track between heightfield vertices.
+section('Terrain clearance');
+{
+  const worlds = PALETTE_NAMES.map((name) => PALETTES[name]).filter(
+    (palette) => palette.kind === 'surface',
+  );
+  let layouts = 0;
+  let samples = 0;
+  let violations = 0;
+  let tightestClearance = Infinity;
+
+  for (const world of worlds) {
+    for (const archetype of ARCHETYPE_NAMES) {
+      for (let i = 0; i < 4; i++) {
+        const seed = `TERRAIN_${world.name}_${archetype}_${i}`;
+        const spec = generateSpec(seed, { palette: world.name, archetype });
+        const track = buildTrack(spec.track);
+        const terrain = buildTerrainHeightfield(track, world.groundRelief);
+        const half = terrain.size * 0.5;
+        const count = Math.max(1, Math.ceil(track.total / (TERRAIN_SPINE_SPACING * 0.5)));
+        layouts++;
+
+        for (let sample = 0; sample <= count; sample++) {
+          const p = track.table.frameAt((sample / count) * track.total).p;
+          const column = Math.max(
+            0,
+            Math.min(
+              terrain.segments - 1,
+              Math.floor((p.x - terrain.centre.x + half) / terrain.cellSize),
+            ),
+          );
+          const row = Math.max(
+            0,
+            Math.min(
+              terrain.segments - 1,
+              Math.floor((p.z - terrain.centre.z + half) / terrain.cellSize),
+            ),
+          );
+          const x0 = terrain.centre.x - half + column * terrain.cellSize;
+          const z0 = terrain.centre.z - half + row * terrain.cellSize;
+          const highestCorner = Math.max(
+            terrain.heightAt(x0, z0),
+            terrain.heightAt(x0 + terrain.cellSize, z0),
+            terrain.heightAt(x0, z0 + terrain.cellSize),
+            terrain.heightAt(x0 + terrain.cellSize, z0 + terrain.cellSize),
+          );
+          const clearance = p.y - highestCorner;
+          tightestClearance = Math.min(tightestClearance, clearance);
+          if (clearance < TERRAIN_VERTICAL_CLEARANCE - 1e-9) violations++;
+          samples++;
+        }
+      }
+    }
+  }
+
+  check(
+    'terrain mesh stays below every surface-world track branch',
+    violations === 0,
+    `${violations} violations across ${samples} samples`,
+  );
+  check(
+    'terrain mesh preserves the vertical visibility margin between grid vertices',
+    tightestClearance >= TERRAIN_VERTICAL_CLEARANCE - 1e-9,
+    `${tightestClearance.toFixed(3)} m tightest clearance`,
+  );
+  console.log(
+    `       ${layouts} layouts · ${samples} dense samples · ` +
+      `${tightestClearance.toFixed(2)} m tightest ground clearance`,
   );
 }
 
@@ -721,6 +818,191 @@ section('Jungle ruin');
   );
 }
 
+// --------------------------------------------------------- video attribution
+//
+// These signs exist specifically because DOM branding disappears from an MP4.
+// Their copy is one replaceable config object; their placement is a pure
+// contract selected after set pieces and before ordinary scenery/spectators.
+section('Video attribution');
+{
+  let layouts = 0;
+  let fullLayouts = 0;
+  let signs = 0;
+  let deterministic = true;
+  let validCount = true;
+  let validLandmarks = true;
+  let validBounds = true;
+  let validBasis = true;
+  let validSpacing = true;
+  let setPieceViolations = 0;
+  let propViolations = 0;
+  let placedProps = 0;
+  let wantedProps = 0;
+  let sparsestPropRatio = 1;
+  let smallestPropMargin = Infinity;
+  const fingerprints = new Set<string>();
+
+  const distance3 = (
+    a: { x: number; y: number; z: number },
+    b: { x: number; y: number; z: number },
+  ): number => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+
+  for (const paletteName of PALETTE_NAMES) {
+    for (const archetype of ARCHETYPE_NAMES) {
+      for (let i = 0; i < 12; i++) {
+        const seed = `ATTRIBUTION_${paletteName}_${archetype}_${i}`;
+        const spec = generateSpec(seed, { archetype, palette: paletteName });
+        const track = buildTrack(spec.track);
+        const setPiece =
+          paletteName === 'desierto'
+            ? buildDesertMineTunnelLayout(track, seed)
+            : paletteName === 'glaciar'
+              ? buildGlacierIceCaveLayout(track, seed)
+              : paletteName === 'jungla'
+                ? buildJungleRuinLayout(track, seed)
+                : null;
+        const exclusions = setPiece ? [setPiece.spectatorExclusion] : [];
+        const first = buildAttributionLayout(track, seed, { exclusions });
+        const second = buildAttributionLayout(track, seed, { exclusions });
+        if (JSON.stringify(first) !== JSON.stringify(second)) deterministic = false;
+
+        layouts++;
+        signs += first.billboards.length;
+        if (first.billboards.length === ATTRIBUTION_BILLBOARD_COUNT) fullLayouts++;
+        fingerprints.add(JSON.stringify(first));
+        validCount &&=
+          first.billboards.length >= 2 &&
+          first.billboards.length <= ATTRIBUTION_BILLBOARD_COUNT;
+        validLandmarks &&= first.billboards.every(
+          (billboard) =>
+            track.landmarks.some((landmark) => Math.abs(landmark.s - billboard.s) < 1e-9) &&
+            billboard.s >= ATTRIBUTION_GRID_BUFFER - 1e-9 &&
+            billboard.s <= track.finishS - ATTRIBUTION_FINISH_BUFFER + 1e-9,
+        );
+
+        for (let b = 0; b < first.billboards.length; b++) {
+          const billboard = first.billboards[b];
+          validBounds &&=
+            billboard.radius > 0 &&
+            billboard.cameraClearance >= ATTRIBUTION_CAMERA_MARGIN - 1e-9 &&
+            billboard.nonLocalTrackClearance >= ATTRIBUTION_OTHER_TRACK_MARGIN - 1e-9 &&
+            first.propExclusions[b]?.points.length === 1 &&
+            Math.abs(first.propExclusions[b].radius - billboard.radius) < 1e-9 &&
+            first.spectatorExclusions[b]?.startS < billboard.s &&
+            first.spectatorExclusions[b]?.endS > billboard.s;
+
+          const cross = {
+            x: billboard.right.y * billboard.up.z - billboard.right.z * billboard.up.y,
+            y: billboard.right.z * billboard.up.x - billboard.right.x * billboard.up.z,
+            z: billboard.right.x * billboard.up.y - billboard.right.y * billboard.up.x,
+          };
+          validBasis &&=
+            Math.abs(distance3(billboard.right, { x: 0, y: 0, z: 0 }) - 1) < 1e-9 &&
+            Math.abs(distance3(billboard.up, { x: 0, y: 0, z: 0 }) - 1) < 1e-9 &&
+            Math.abs(distance3(billboard.normal, { x: 0, y: 0, z: 0 }) - 1) < 1e-9 &&
+            distance3(cross, billboard.normal) < 1e-9;
+
+          for (let other = b + 1; other < first.billboards.length; other++) {
+            const next = first.billboards[other];
+            validSpacing &&=
+              Math.abs(billboard.s - next.s) >= ATTRIBUTION_MIN_ARC_SPACING - 1e-9 &&
+              distance3(billboard.position, next.position) >=
+                billboard.radius + next.radius + 0.5 - 1e-9;
+          }
+          for (const exclusion of exclusions) {
+            const reserved = first.spectatorExclusions[b];
+            if (reserved.startS < exclusion.endS && reserved.endS > exclusion.startS) {
+              setPieceViolations++;
+            }
+          }
+        }
+
+        const palette = PALETTES[paletteName];
+        if (palette.kind === 'surface') {
+          const propExclusions = [
+            ...(setPiece ? [setPiece.propExclusion] : []),
+            ...first.propExclusions,
+          ];
+          const props = buildPropLayout(
+            palette,
+            track,
+            seed,
+            (x, z) => -11 + Math.sin(x * 0.03) * 2 + Math.cos(z * 0.025) * 1.5,
+            { exclusions: propExclusions },
+          );
+          wantedProps += palette.propCount;
+          placedProps += props.length;
+          sparsestPropRatio = Math.min(sparsestPropRatio, props.length / palette.propCount);
+          for (const prop of props) {
+            for (const exclusion of first.propExclusions) {
+              const margin =
+                distanceToTrackPlan(prop.x, prop.z, exclusion.points) -
+                (exclusion.radius + prop.radius);
+              smallestPropMargin = Math.min(smallestPropMargin, margin);
+            }
+            if (!clearsPropExclusions(prop.x, prop.z, prop.radius, first.propExclusions)) {
+              propViolations++;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  check(
+    `generated worlds receive two or three safe signs (${layouts} layouts)`,
+    validCount && fullLayouts >= layouts * 0.99,
+    `${fullLayouts}/${layouts} received all ${ATTRIBUTION_BILLBOARD_COUNT}`,
+  );
+  check('same race -> byte-identical attribution layout', deterministic);
+  check(
+    'different races produce different attribution layouts',
+    fingerprints.size === layouts,
+    `${fingerprints.size}/${layouts} distinct`,
+  );
+  check('signs occupy buffered segment landmarks', validLandmarks);
+  check('sign basis vectors are orthonormal and face upstream', validBasis);
+  check('signs clear the chase camera, non-local track and one another', validBounds && validSpacing);
+  check('authored set pieces take priority over attribution signs', setPieceViolations === 0);
+  check(
+    'billboard reservations retain surface-world scenery density',
+    placedProps >= wantedProps * 0.99 && sparsestPropRatio >= 0.9,
+    `${placedProps}/${wantedProps} placed, ${(sparsestPropRatio * 100).toFixed(1)}% sparsest`,
+  );
+  check(
+    'no ordinary prop enters a billboard bound',
+    propViolations === 0 && smallestPropMargin >= TRACK_PLAN_SAFETY_MARGIN - 1e-9,
+    `${propViolations} violations, ${smallestPropMargin.toFixed(3)} m margin`,
+  );
+  check(
+    'attribution copy is centralized and renderable',
+    Object.values(VIDEO_ATTRIBUTION).every((value) => value.trim().length > 0) &&
+      VIDEO_ATTRIBUTION.billboardTitle === 'Rolling Rivals' &&
+      VIDEO_ATTRIBUTION.credit === 'Rolling Rivals',
+  );
+  check(
+    'outro card timing is deterministic and reaches full opacity inside the exported outro',
+    outroCardOpacity(100, 90, false) === 0 &&
+      outroCardOpacity(90 + OUTRO_CARD_DELAY, 90, true) < 1e-12 &&
+      Math.abs(outroCardOpacity(90 + OUTRO_CARD_DELAY + OUTRO_CARD_FADE * 0.5, 90, true) - 0.5) <
+        1e-9 &&
+      outroCardOpacity(90 + OUTRO, 90, true) === 1,
+  );
+
+  const outcomeSeed = 'ATTRIBUTION_OUTCOME';
+  const outcomeBefore = fingerprint(outcomeSeed);
+  const outcomeSpec = generateSpec(outcomeSeed);
+  buildAttributionLayout(buildTrack(outcomeSpec.track), outcomeSeed);
+  check(
+    'attribution layout cannot change the race outcome',
+    fingerprint(outcomeSeed) === outcomeBefore,
+  );
+  console.log(
+    `       ${signs} signs · ${placedProps} surface props · ` +
+      `${smallestPropMargin.toFixed(2)} m tightest prop margin`,
+  );
+}
+
 // ---------------------------------------------------------------- races
 section('Race outcomes');
 {
@@ -1079,11 +1361,103 @@ section('Soundtrack');
   );
   check('the five start lights each get a beep', score.sfx.filter((h) => h.kind === 'beep').length === 5);
   check(
-    'the crowd rises from the countdown and falls to silence',
-    score.crowd.length > 4 &&
-      score.crowd[0].level < 0.2 &&
-      score.crowd[score.crowd.length - 1].level === 0 &&
-      score.crowd.every((p, i) => i === 0 || p.t >= score.crowd[i - 1].t),
+    'the crowd reacts at lights-out and peaks at the finish',
+    score.crowd.length >= 2 &&
+      score.crowd[0].t >= COUNTDOWN &&
+      score.crowd[score.crowd.length - 1].level === 1 &&
+      score.crowd.every((swell, i) => i === 0 || swell.t >= score.crowd[i - 1].t),
+  );
+  check(
+    'crowd noise is finite and separated by real silence',
+    score.crowd.every(
+      (swell, i) =>
+        swell.dur >= 0.35 &&
+        swell.dur <= 2.7 &&
+        swell.level > 0 &&
+        swell.level <= 1 &&
+        swell.t + swell.dur <= score.duration &&
+        (i === 0 || swell.t - (score.crowd[i - 1].t + score.crowd[i - 1].dur) >= 0.79),
+    ),
+  );
+
+  const genreScores = MUSIC_GENRES.map((genre) => buildScore(spec, summary, { genre }));
+  const randomGenreSeeds = Array.from({ length: 60 }, (_, index) => `MUSIC_RANDOM_${index}`);
+  const randomGenres = randomGenreSeeds.map(musicGenreForSeed);
+  check(
+    'random music is deterministic, valid, and can reach every implemented genre',
+    randomGenreSeeds.every((seed, index) => musicGenreForSeed(seed) === randomGenres[index]) &&
+      randomGenres.every((genre) => MUSIC_GENRES.includes(genre)) &&
+      new Set(randomGenres).size === MUSIC_GENRES.length,
+  );
+  check(
+    'every genre is deterministic for the same race',
+    genreScores.every(
+      (genreScore) =>
+        JSON.stringify(buildScore(spec, summary, { genre: genreScore.genre })) ===
+        JSON.stringify(genreScore),
+    ),
+  );
+  check(
+    'genre profiles produce distinct arrangements',
+    new Set(genreScores.map((genreScore) => JSON.stringify(genreScore.music))).size ===
+      MUSIC_GENRES.length,
+  );
+  check(
+    'every genre grid starts its main section exactly at lights-out',
+    MUSIC_GENRES.every((genre) => {
+      const grid = musicGrid(genre);
+      return Math.abs(grid.barZero + grid.introBars * grid.bar - COUNTDOWN) < 1e-9;
+    }),
+  );
+  check(
+    'genre notes are bounded, quantised, and finish inside the video',
+    genreScores.every((genreScore) => {
+      const grid = musicGrid(genreScore.genre);
+      return genreScore.music.every((note) => {
+        const steps = (note.t - grid.barZero) / grid.step;
+        return (
+          note.t >= 0 &&
+          note.t + note.dur <= genreScore.duration &&
+          note.dur > 0 &&
+          note.gain > 0 &&
+          note.gain <= 1 &&
+          Math.abs(steps - Math.round(steps)) < 1e-6
+        );
+      });
+    }),
+  );
+  const byGenre = Object.fromEntries(genreScores.map((genreScore) => [genreScore.genre, genreScore]));
+  check(
+    'kids music uses its bright melodic voices without the DnB bass',
+    byGenre.kids.music.some((note) => note.voice === 'bell') &&
+      byGenre.kids.music.some((note) => note.voice === 'pluck') &&
+      byGenre.kids.music.every((note) => note.voice !== 'reese'),
+  );
+  check(
+    'rock uses guitar and picked-bass voices',
+    byGenre.rock.music.some((note) => note.voice === 'guitar') &&
+      byGenre.rock.music.some((note) => note.voice === 'bassGuitar'),
+  );
+  check('DnB retains its signature reese voice', byGenre.dnb.music.some((note) => note.voice === 'reese'));
+
+  const durationCases = Array.from({ length: 12 }, (_, i) => {
+    const candidate = generateSpec(`AUDIO-LENGTH-${i}`);
+    return { candidate, result: simulate(candidate, undefined, { trace: true }) };
+  }).sort((a, b) => a.result.videoDuration - b.result.videoDuration);
+  const shortAndLong = [durationCases[0], durationCases[durationCases.length - 1]];
+  check(
+    'short and long races arrange safely in every genre',
+    MUSIC_GENRES.every((genre) =>
+      shortAndLong.every(({ candidate, result }) => {
+        const candidateScore = buildScore(candidate, result, { genre });
+        return (
+          candidateScore.duration === result.videoDuration &&
+          candidateScore.music.length > 0 &&
+          candidateScore.music.every((note) => note.t >= 0 && note.t + note.dur <= candidateScore.duration) &&
+          candidateScore.crowd.every((swell) => swell.t + swell.dur <= candidateScore.duration)
+        );
+      }),
+    ),
   );
 
   // Contact events are what the impact sounds are written against, and they are

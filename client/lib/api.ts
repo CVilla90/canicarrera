@@ -54,9 +54,14 @@ export interface RaceResult extends RaceResponse {
 }
 
 /** Local stand-in for the server's curation. Same code, different machine. */
-function curateLocally(seed?: string): RaceResult {
-  if (seed) {
-    const spec = generateSpec(normaliseSeed(seed));
+function curateLocally(request: CreateRaceRequest): RaceResult {
+  const requestedSeed = typeof request.seed === 'string' && request.seed.trim()
+    ? normaliseSeed(request.seed)
+    : null;
+  const generateOptions = { archetype: request.archetype, palette: request.palette };
+
+  if (requestedSeed) {
+    const spec = generateSpec(requestedSeed, generateOptions);
     const summary = simulate(spec);
     return {
       id: `local-${spec.seed}`,
@@ -69,7 +74,7 @@ function curateLocally(seed?: string): RaceResult {
     };
   }
   const seeds = Array.from({ length: 12 }, () => randomSeed());
-  const result = curate({ seeds, budgetMs: 2500 });
+  const result = curate({ seeds, ...generateOptions, budgetMs: 2500 });
   return {
     id: `local-${result.best.spec.seed}`,
     spec: result.best.spec,
@@ -89,7 +94,7 @@ export async function createRace(request: CreateRaceRequest = {}): Promise<RaceR
     });
     return { ...response, offline: false };
   } catch {
-    return curateLocally(request.seed);
+    return curateLocally(request);
   }
 }
 

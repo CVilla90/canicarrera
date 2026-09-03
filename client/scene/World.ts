@@ -52,6 +52,11 @@ import type { Palette } from '@shared/palette.ts';
 import type { Track } from '@shared/track.ts';
 import { COSMETIC, stream } from '@shared/rng.ts';
 import { buildPropLayout } from './WorldLayout.ts';
+import { buildTerrainHeightfield } from './TerrainLayout.ts';
+import {
+  buildAttributionLayout,
+  type AttributionLayout,
+} from './AttributionLayout.ts';
 import {
   buildDesertMineTunnelLayout,
   buildGlacierIceCaveLayout,
@@ -93,6 +98,7 @@ export interface WorldParts {
   group: Group;
   motes: { points: Points; drift: Vector3; span: number; base: Vector3 } | null;
   setPiece: TunnelSetPieceLayout | null;
+  attribution: AttributionLayout;
 }
 
 /**
@@ -729,23 +735,32 @@ function buildJungleRuin(layout: JungleRuinLayout): Group {
 export function buildWorld(palette: Palette, track: Track, seed: string): WorldParts {
   const group = new Group();
   group.name = 'world';
-  if (palette.kind !== 'surface') return { group, motes: null, setPiece: null };
-  let setPiece: TunnelSetPieceLayout | null = null;
-
-  // Centre everything on the middle of the run, so a long course does not
-  // wander off the edge of its own terrain.
-  const mid = track.table.frameAt(track.total * 0.5).p;
-  const centre = new Vector3(mid.x, mid.y, mid.z);
-  // How far the track wanders, used to size the terrain and the scatter radius.
-  // Use the WHOLE course, not only start and finish. A spiral can travel far
-  // outside both endpoints, and sizing a world from those two points alone can
-  // put legitimate scenery beyond its terrain plate.
-  let courseReach = 0;
-  for (let i = 0; i <= 96; i++) {
-    const p = track.table.frameAt((i / 96) * track.total).p;
-    courseReach = Math.max(courseReach, Math.hypot(p.x - centre.x, p.z - centre.z));
+  // Authored crossings take priority. Attribution is then selected around
+  // those intervals and, in turn, reserves its bounds before props or the cast
+  // are placed. That ordering keeps every overlap intentional.
+  const setPiece: TunnelSetPieceLayout | null =
+    palette.kind !== 'surface'
+      ? null
+      : palette.name === 'desierto'
+        ? buildDesertMineTunnelLayout(track, seed)
+        : palette.name === 'glaciar'
+          ? buildGlacierIceCaveLayout(track, seed)
+          : palette.name === 'jungla'
+            ? buildJungleRuinLayout(track, seed)
+            : null;
+  const attribution = buildAttributionLayout(track, seed, {
+    exclusions: setPiece ? [setPiece.spectatorExclusion] : [],
+  });
+  if (palette.kind !== 'surface') {
+    return { group, motes: null, setPiece: null, attribution };
   }
-  const reach = courseReach + 90;
+
+  // TerrainLayout owns both the world extent and the complete height function.
+  // Keeping that contract renderer-free lets Node prove the actual mesh grid
+  // remains below every branch of the course before Three.js draws it.
+  const terrain = buildTerrainHeightfield(track, palette.groundRelief);
+  const centre = new Vector3(terrain.centre.x, terrain.centre.y, terrain.centre.z);
+  const { reach } = terrain;
 
   // ---- sky dome
   const sky = new Mesh(
@@ -770,58 +785,10 @@ export function buildWorld(palette: Palette, track: Track, seed: string): WorldP
 
   // ---- terrain
   //
-  // The terrain FOLLOWS THE TRACK DOWN. These courses drop 40 m or more, so a
-  // flat plate at any single height is wrong everywhere else: put it at the
-  // lowest point and the whole first half of the race happens in empty sky;
-  // put it at the start and the finish line is buried. A marble run in a jungle
-  // is on a hillside, so the ground is a hillside — sampled from the track's
-  // own descent and dropped a fixed depth below it.
-  const SAMPLES = 72;
-  const spine: Array<{ x: number; z: number; y: number }> = [];
-  let lowest = Infinity;
-  for (let i = 0; i <= SAMPLES; i++) {
-    const p = track.table.frameAt((i / SAMPLES) * track.total).p;
-    spine.push({ x: p.x, z: p.z, y: p.y });
-    if (p.y < lowest) lowest = p.y;
-  }
-  /** Depth of the chute above the ground. Enough that props never pierce it. */
-  const DEPTH = 11;
-
-  /**
-   * Ground height under a world position.
-   *
-   * Nearest point on the spine, then eased out to the lowest level as you get
-   * far away — so the hillside reads locally and the distance still flattens
-   * into a horizon instead of tilting off to infinity.
-   */
-  const groundHeightAt = (x: number, z: number): number => {
-    let best = Infinity;
-    let bestY = lowest;
-    for (const s of spine) {
-      const d = (s.x - x) * (s.x - x) + (s.z - z) * (s.z - z);
-      if (d < best) {
-        best = d;
-        bestY = s.y;
-      }
-    }
-    const distance = Math.sqrt(best);
-    const blend = Math.min(1, distance / 140);
-    return (bestY - DEPTH) * (1 - blend) + (lowest - DEPTH - 6) * blend;
-  };
+  const groundHeightAt = terrain.heightAt;
 
   if (palette.ground !== null) {
-    // Select authored intervals before ordinary props. The resulting larger
-    // exclusion corridor is then part of every scenery placement decision.
-    setPiece =
-      palette.name === 'desierto'
-        ? buildDesertMineTunnelLayout(track, seed)
-        : palette.name === 'glaciar'
-          ? buildGlacierIceCaveLayout(track, seed)
-          : palette.name === 'jungla'
-            ? buildJungleRuinLayout(track, seed)
-            : null;
-    const segments = 64;
-    const size = reach * 4;
+    const { segments, size } = terrain;
     const groundGeo = new PlaneGeometry(size, size, segments, segments);
     const position = groundGeo.attributes.position as BufferAttribute;
     for (let i = 0; i < position.count; i++) {
@@ -831,9 +798,7 @@ export function buildWorld(palette: Palette, track: Track, seed: string): WorldP
       const ly = position.getY(i);
       const wx = centre.x + lx;
       const wz = centre.z - ly;
-      const relief =
-        Math.sin(wx * 0.031) * 0.6 + Math.sin(wz * 0.027) * 0.5 + Math.sin((wx + wz) * 0.013) * 0.7;
-      position.setZ(i, groundHeightAt(wx, wz) - centre.y + relief * palette.groundRelief);
+      position.setZ(i, groundHeightAt(wx, wz) - centre.y);
     }
     groundGeo.computeVertexNormals();
 
@@ -853,7 +818,10 @@ export function buildWorld(palette: Palette, track: Track, seed: string): WorldP
     const propGeo = propGeometry(palette);
     if (propGeo && palette.propCount > 0) {
       const placements = buildPropLayout(palette, track, seed, groundHeightAt, {
-        exclusions: setPiece ? [setPiece.propExclusion] : [],
+        exclusions: [
+          ...(setPiece ? [setPiece.propExclusion] : []),
+          ...attribution.propExclusions,
+        ],
       });
       const mesh = new InstancedMesh(
         propGeo,
@@ -912,7 +880,7 @@ export function buildWorld(palette: Palette, track: Track, seed: string): WorldP
     motes = { points, drift: moteDrift(palette), span, base: new Vector3() };
   }
 
-  return { group, motes, setPiece };
+  return { group, motes, setPiece, attribution };
 }
 
 /**

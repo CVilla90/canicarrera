@@ -1,5 +1,7 @@
 # Canicarrera
 
+**Current milestone: `v0.2.0-beta.1` — Rolling Rivals beta.**
+
 *Canica* + *carrera* — a marble race **video generator**. Press one button, the
 server invents a race worth watching, your machine renders it and hands you an
 MP4.
@@ -95,8 +97,24 @@ lets the client replay what the server scored.
 ## The seed
 
 Anything is a valid seed. `hola-mundo`, `CANICARRERA`, `8F3A2C91` — input is
-normalised, never rejected. Every race is at `/?c=<seed>`, which is the share
-link and the "give me that one again" mechanism.
+normalised, never rejected. Race links use `?c=<seed>` and include the resolved
+world, track type, and music when present, so a manually configured race opens
+with the same complete presentation rather than merely reusing its physics
+seed.
+
+When Auto Next Race is enabled, New Race remains a one-click curated random
+race. When it is disabled, New Race opens a compact setup panel for world,
+track type, and soundtrack. The Grand Prix world plus Arcade, Electronic,
+Orchestral, and Latin soundtrack directions are visible there as honest
+coming-soon items outside the active selectors; they do not masquerade as
+implemented generators.
+
+## Video attribution
+
+The exported pixels carry their own attribution: deterministic trackside signs
+and a scene-rendered outro card show the Canicarrera name, creator credit, and a
+destination URL. They are Three.js objects rather than HTML, so preview and MP4
+agree. Change all three strings in one place: `client/branding.ts`.
 
 ## Deploy
 
@@ -106,14 +124,16 @@ see the comments in it for why the machine is deliberately small and why
 
 ## Sound
 
-Every race has a soundtrack, and it is **generated, not sampled**: procedural
-drum and bass at 174 BPM, sound effects off the simulator's event stream, and a
-crowd that reacts to how close the front two are.
+Every race has a soundtrack, and it is **generated, not sampled**. The remembered
+genre selector offers drum and bass, children's music, and rock; each profile
+has its own tempo, harmony, rhythm, and synthesised voices. Sound effects come
+from the simulator's event stream, while the crowd enters in short tension-
+driven swells with real silent gaps instead of an always-on noise bed.
 
-It is arranged *to* the race rather than played underneath it — the bar grid is
-anchored so the drop lands exactly on lights-out, and a bar where the leaders are
-fighting becomes a drop bar whatever the sixteen-bar cycle says. The whole race
-is simulated before a note is scheduled, which is what makes that possible.
+It is arranged *to* the race rather than played underneath it — every profile's
+bar grid is anchored so its main section starts exactly on lights-out, and a bar
+where the leaders are fighting receives the profile's highest energy. The whole
+race is simulated before a note is scheduled, which is what makes that possible.
 
 Nothing is a recording. That keeps the bundle small, means nothing can 404, and
 avoids the real risk for a tool whose output is meant to be uploaded: a licensed

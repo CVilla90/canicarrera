@@ -56,6 +56,7 @@ import { clamp } from '@shared/vec3.ts';
 import { SharedCurve } from './SharedCurve.ts';
 import { buildWorld, buildChannelGeometry, buildKerbs, updateMotes, type WorldParts } from './World.ts';
 import { buildCharacters, updateCharacters, type CharacterCast } from './Characters.ts';
+import { buildAttribution, type AttributionParts } from './Attribution.ts';
 import { PostFX } from '../render/PostFX.ts';
 import { buildEnvironment } from '../render/environment.ts';
 import { presetById, DEFAULT_PRESET_ID, needsPostFX, type RenderPreset } from '../render/presets.ts';
@@ -138,6 +139,7 @@ export class RaceScene {
   private starField: Points | null = null;
   private world: WorldParts | null = null;
   private cast: CharacterCast | null = null;
+  private attribution: AttributionParts | null = null;
   private confetti: { points: Points; vel: Vector3[]; life: number } | null = null;
   private confettiFired = false;
 
@@ -417,10 +419,20 @@ export class RaceScene {
     this.syncEnvironment();
     this.world = buildWorld(palette, this.track, spec.seed);
     this.scene.add(this.world.group);
+    this.attribution = buildAttribution(
+      this.world.attribution,
+      this.renderer.capabilities.getMaxAnisotropy(),
+    );
+    this.scene.add(this.attribution.billboards);
+    this.camera.add(this.attribution.endCard);
+    this.attribution.resize(this.camera.aspect);
     // Keyed on the race seed, so the same link puts the same penguin on the
     // same rock — and on a cosmetic stream, so adding one cannot move a marble.
     this.cast = buildCharacters(palette, this.track, spec.seed, {
-      exclusions: this.world.setPiece ? [this.world.setPiece.spectatorExclusion] : [],
+      exclusions: [
+        ...(this.world.setPiece ? [this.world.setPiece.spectatorExclusion] : []),
+        ...this.world.attribution.spectatorExclusions,
+      ],
     });
     this.scene.add(this.cast.group);
     this.buildStars();
@@ -490,6 +502,7 @@ export class RaceScene {
     this.renderer.setSize(width, height, updateStyle);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+    this.attribution?.resize(this.camera.aspect);
     // PostFX buffers are sized in device pixels, matching the drawing buffer
     // rather than the CSS box — otherwise a HiDPI screen renders the effects at
     // half resolution and the composite blurs the whole frame.
@@ -828,6 +841,7 @@ export class RaceScene {
     // a frame drawn in 3 ms and the same frame drawn in 300 ms are handed the
     // same `sim.time`, so the penguin is mid-flap at exactly the same instant.
     if (this.cast) updateCharacters(this.cast, sim.time, sim.leader().s);
+    this.attribution?.update(sim.time, sim.endTime, sim.phase === 'finished');
 
     if (!this.confettiFired && sim.finishOrder.length > 0) {
       this.confettiFired = true;
@@ -1087,6 +1101,12 @@ export class RaceScene {
       // traversal would dispose the same sphere eight times.
       this.cast.dispose();
       this.cast = null;
+    }
+    if (this.attribution) {
+      this.scene.remove(this.attribution.billboards);
+      this.camera.remove(this.attribution.endCard);
+      this.attribution.dispose();
+      this.attribution = null;
     }
     if (this.world) {
       this.scene.remove(this.world.group);
